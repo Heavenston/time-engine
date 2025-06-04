@@ -1,14 +1,22 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+
+pub struct Simulation {
+    width: f32,
+    height: f32,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl Simulation {
+    pub fn new(width: f32, height: f32) -> Self {
+        Self {
+            width,
+            height
+        }
+    }
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    pub fn width(&self) -> f32 {
+        self.width
+    }
+
+    pub fn height(&self) -> f32 {
+        self.height
     }
 }
