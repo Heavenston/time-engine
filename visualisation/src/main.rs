@@ -30,14 +30,12 @@ async fn main() {
             )
         });
         sim.push_sphere(te::Sphere {
-            max_age: 10.,
             initial_pos: glam::Vec2::new(50., 50.),
             initial_velocity: glam::Vec2::new(0., 30.),
             radius: 3.,
             ..Default::default()
         });
         sim.push_sphere(te::Sphere {
-            initial_time: 2.5,
             initial_pos: glam::Vec2::new(20., 6.),
             initial_velocity: glam::Vec2::new(30., 20.),
             radius: 3.,
@@ -138,10 +136,22 @@ async fn main() {
 
         draw_rectangle_lines(-2.5, -2.5, sim.width() + 5., sim.height() + 5., 5., WHITE);
 
-        for (idx, sphere) in sim.spheres().iter().enumerate() {
-            let Some(pos) = simulation_result.get_sphere_pos(idx, t)
+        for sphere in &simulation_result.spheres {
+            let Some(snap) = sphere.get_pos(t)
             else { continue };
-            draw_circle(pos.x, pos.y, sphere.radius, WHITE);
+            draw_circle(snap.pos.x, snap.pos.y, sphere.radius, WHITE);
+            let text = &format!("{:.01}", snap.age);
+
+            let size = 32;
+            let scale: f32 = 0.075;
+            let text_size = measure_text(text, None, size, scale);
+            draw_text_ex(text, snap.pos.x - text_size.width / 2., snap.pos.y - text_size.height / 2., TextParams {
+                font_size: size,
+                font_scale: -scale,
+                font_scale_aspect: -1.,
+                color: BLACK,
+                ..Default::default()
+            });
         }
 
         for portal in sim.portals() {

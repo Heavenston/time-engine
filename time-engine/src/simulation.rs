@@ -11,30 +11,19 @@ const MAX_ITERATIONS: usize = 1_000_000;
 pub struct SpherePositionSnapshot {
     pub t: f32,
     pub pos: Vec2,
+    pub age: f32,
 }
 
-#[derive(Default, Clone, Debug)]
-pub struct SimulationResult {
-    pub sphere_positions: Vec<Vec<SpherePositionSnapshot>>,
+#[derive(Clone, Debug)]
+pub struct SimulatedSphere {
+    pub radius: f32,
+    pub snapshots: Vec<SpherePositionSnapshot>,
 }
 
-impl SimulationResult {
-    pub fn new() -> Self {
-        default()
-    }
-
-    pub fn sphere_count(&self) -> usize {
-        self.sphere_positions.len()
-    }
-
-    /// Does any necessary interpolation to get the position of the given
-    /// sphere at the given time.
-    /// Returns None if the sphere is not spawned at this time
-    pub fn get_sphere_pos(&self, idx: usize, t: f32) -> Option<Vec2> {
-        let positions = self.sphere_positions.get(idx)?;
-
+impl SimulatedSphere {
+    pub fn get_pos(&self, t: f32) -> Option<SpherePositionSnapshot> {
         // Find the first snapshot that is after the given time
-        let (after_idx, after) = positions.iter().enumerate()
+        let (after_idx, after) = self.snapshots.iter().enumerate()
             .find(|(_, snap)| snap.t >= t)?;
 
         // The first snapshot is after the given time so the sphere is not
@@ -45,15 +34,30 @@ impl SimulationResult {
 
         // No interpolation needed in this case
         if after.t == t {
-            return Some(after.pos);
+            return Some(*after);
         }
 
-        let before = &positions[after_idx - 1];
+        let before = &self.snapshots[after_idx - 1];
 
         let lerp_fact = (t - before.t) / (after.t - before.t);
         debug_assert!((0. ..=1.).contains(&lerp_fact));
 
-        Some(before.pos.lerp(after.pos, lerp_fact))
+        Some(SpherePositionSnapshot {
+            t,
+            pos: before.pos.lerp(after.pos, lerp_fact),
+            age: before.age + ((after.age - before.age) * lerp_fact),
+        })
+    }
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct SimulationResult {
+    pub spheres: Vec<SimulatedSphere>,
+}
+
+impl SimulationResult {
+    pub fn new() -> Self {
+        default()
     }
 }
 
@@ -62,6 +66,7 @@ struct SphereSimulationSnapshot {
     t: f32,
     pos: Vec2,
     vel: Vec2,
+    age: f32,
 }
 
 impl SphereSimulationSnapshot {
@@ -71,6 +76,7 @@ impl SphereSimulationSnapshot {
             t: self.t + dt,
             pos: self.pos + self.vel * dt,
             vel: self.vel,
+            age: self.age + dt,
         }
     }
 
@@ -82,7 +88,7 @@ impl SphereSimulationSnapshot {
 
 impl From<SphereSimulationSnapshot> for SpherePositionSnapshot {
     fn from(val: SphereSimulationSnapshot) -> Self {
-        SpherePositionSnapshot { t: val.t, pos: val.pos }
+        SpherePositionSnapshot { t: val.t, pos: val.pos, age: val.age }
     }
 }
 
@@ -100,6 +106,7 @@ impl<'a> Simulation<'a> {
             t: sphere.initial_time,
             pos: sphere.initial_pos,
             vel: sphere.initial_velocity,
+            age: 0.,
         }]).collect_vec();
 
         let axis_x = na::Unit::new_normalize(na::vector![1., 0.]);
@@ -177,12 +184,13 @@ impl<'a> Simulation<'a> {
         let impact_signs = -(impact_normal.abs() * 2. - 1.);
 
         Some(SphereSimulationSnapshot {
-            // vel: snap.vel * impact_signs,
-            // ..snap.extrapolate_to(impact_t)
-            
-            t: impact_t,
-            pos: snap.pos + snap.vel * result.time_of_impact,
             vel: snap.vel * impact_signs,
+            ..snap.extrapolate_to(impact_t)
+            
+            // t: impact_t,
+            // pos: snap.pos + snap.vel * result.time_of_impact,
+            // vel: snap.vel * impact_signs,
+            // age: snap.age,
         })
     }
 
@@ -269,7 +277,7 @@ impl<'a> Simulation<'a> {
         assert!(iterations < MAX_ITERATIONS);
 
         SimulationResult {
-            sphere_positions: self.snapshots.iter().enumerate().map(|(idx, snaps)| {
+            spheres: self.snapshots.iter().enumerate().map(|(idx, snaps)| {
                 let sphere = &self.world_state.spheres[idx];
                 let end = self.end_time.min(sphere.initial_time + sphere.max_age);
                 let mut out = snaps.iter().copied()
@@ -279,7 +287,11 @@ impl<'a> Simulation<'a> {
                 if let Some(last) = snaps.last() { if last.t < end {
                     out.push(last.extrapolate_to(end).into());
                 } }
-                out
+
+                SimulatedSphere {
+                    radius: sphere.radius,
+                    snapshots: out,
+                }
             }).collect_vec(),
         }
     }
