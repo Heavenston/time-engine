@@ -264,6 +264,11 @@ impl<'a> Simulation<'a> {
                 break;
             }
 
+            debug_assert!(
+                next_collision_datas.iter().map(|(sphere_idx, _)| sphere_idx)
+                .all_unique()
+            );
+
             if let Some((_, col_snapshot)) = next_collision_datas.first() {
                 debug_assert!(current_time <= col_snapshot.t);
                 current_time = col_snapshot.t;

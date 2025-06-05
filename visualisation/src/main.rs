@@ -19,15 +19,17 @@ async fn main() {
             height: 20.,
             initial_transform: Affine2::from_angle_translation(
                 std::f32::consts::FRAC_PI_2,
-                Vec2::new(50., 85.),
-            )
+                Vec2::new(50., 90.),
+            ),
+            link_to: 1,
         });
         sim.push_portal(te::Portal {
             height: 20.,
             initial_transform: Affine2::from_angle_translation(
                 0.,
-                Vec2::new(85., 50.),
-            )
+                Vec2::new(90., 50.),
+            ),
+            link_to: 0,
         });
         sim.push_sphere(te::Sphere {
             initial_pos: glam::Vec2::new(50., 50.),
@@ -172,8 +174,11 @@ async fn main() {
 
         for portal in sim.portals() {
             let h2 = portal.height / 2.;
+            let middle = portal.initial_transform.transform_point2(Vec2::new(0., 0.));
             let start = portal.initial_transform.transform_point2(Vec2::new(0., -h2));
             let end = portal.initial_transform.transform_point2(Vec2::new(0., h2));
+            let normal = portal.initial_transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
+            draw_line(middle.x, middle.y, middle.x + normal.x, middle.y + normal.y, 0.5, LIME);
             draw_line(start.x, start.y, end.x, end.y, 1., GREEN);
         }
 

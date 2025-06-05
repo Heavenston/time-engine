@@ -25,6 +25,8 @@ impl Default for Sphere {
 pub struct Portal {
     pub height: f32,
     pub initial_transform: Affine2,
+    /// Index of the portal this portals links to
+    pub link_to: usize,
 }
 
 pub struct WorldState {
