@@ -208,33 +208,32 @@ impl<'a> Simulation<'a> {
 
     fn get_sphere_shape(&self, idx: usize, t: f32) -> Option<impl Shape> {
         let sphere = self.world_state.spheres.get(idx)?;
-        return Some(shape::Ball::new(sphere.radius));
-        // let snap = self.get_sphere_snapshot(idx, t)?;
+        let snap = self.get_sphere_snapshot(idx, t)?;
 
-        // // get a shape for the sphere in world space
-        // let mut shapes = vec![vec![circle_polygon(snap.pos, sphere.radius, 30)]];
-        // for traversal in &snap.portal_traversals {
-        //     let portal = &self.world_state.portals[traversal.portal_in_idx];
-        //     shapes = clip_shapes_on_portal(shapes, portal, traversal.direction.swap());
-        // }
+        // get a shape for the sphere in world space
+        let mut shapes = vec![vec![circle_polygon(snap.pos, sphere.radius, 30)]];
+        for traversal in &snap.portal_traversals {
+            let portal = &self.world_state.portals[traversal.portal_in_idx];
+            shapes = clip_shapes_on_portal(shapes, portal, traversal.direction.swap());
+        }
 
-        // if shapes.is_empty() {
-        //     return None;
-        // }
+        if shapes.is_empty() {
+            return None;
+        }
         
-        // Some(shape::Compound::new(shapes.into_iter().map(|shape| {
-        //     // only support one contour per shape
-        //     assert!(shape.len() == 1);
-        //     let contour = &shape[0];
+        Some(shape::Compound::new(shapes.into_iter().map(|shape| {
+            // only support one contour per shape
+            assert!(shape.len() == 1);
+            let contour = &shape[0];
 
-        //     (pmath::Isometry::identity(), SharedShape::new(shape::ConvexPolygon::from_convex_polyline(
-        //         contour.iter().copied()
-        //             // Put the shape back in sphere's local-space
-        //             .map(|p| p - snap.pos)
-        //             .map(|p| na::vector![p.x, p.y].into())
-        //             .collect()
-        //     ).expect("Is valid")))
-        // }).collect()))
+            (pmath::Isometry::identity(), SharedShape::new(shape::ConvexPolygon::from_convex_polyline(
+                contour.iter().copied()
+                    // Put the shape back in sphere's local-space
+                    .map(|p| p - snap.pos)
+                    .map(|p| na::vector![p.x, p.y].into())
+                    .collect()
+            ).expect("Is valid")))
+        }).collect()))
     }
 
     fn get_portal_shape(&self, idx: usize, _t: f32) -> impl Shape {
@@ -363,19 +362,9 @@ impl<'a> Simulation<'a> {
         let exit_dt = {
             let t0 = (sphere.radius - rel_pos.x) / rel_vel.x;
             let t1 = (- sphere.radius - rel_pos.x) / rel_vel.x;
-            let min = t0.min(t1);
-            let max = t0.max(t1);
 
-            if max <= 0.0001 {
-                unreachable!("Never exits ?");
-            }
-            // Return the first positive value
-            if min <= 0.0001 {
-                max
-            }
-            else {
-                min
-            }
+            // Not sure on the math of alaways taking the max but anyway
+            t0.max(t1)
         };
 
         let direction = if rel_pos.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
