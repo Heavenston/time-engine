@@ -5,6 +5,8 @@ use parry2d::{ math as pmath, query, shape::{self, SharedShape} };
 use nalgebra as na;
 use itertools::Itertools;
 
+const MAX_ITERATIONS: usize = 1_000_000;
+
 #[derive(Debug, Clone, Copy)]
 pub struct SpherePositionSnapshot {
     pub t: f32,
@@ -141,18 +143,16 @@ impl<'a> Simulation<'a> {
     fn get_next_sphere_wall_collision(&self, idx: usize, t: f32) -> Option<SphereSimulationSnapshot> {
         let last_snap = self.get_last_sphere_snapshot(idx, t)?;
         // The snapshot at time `t`
-        let SphereSimulationSnapshot { t: _, pos, vel } = last_snap.extrapolate_to(t);
+        let snap = last_snap.extrapolate_to(t);
         
         let sphere = &self.world_state.spheres[idx];
         // Compute collision from time `t`
         let result = query::cast_shapes(
             &default(), &default(), &self.box_shape,
 
-            &pmath::Isometry::translation(pos.x, pos.y),
-            &na::vector![last_snap.vel.x, last_snap.vel.y], &shape::Ball::new(sphere.radius),
+            &pmath::Isometry::translation(snap.pos.x, snap.pos.y),
+            &na::vector![snap.vel.x, snap.vel.y], &shape::Ball::new(sphere.radius),
 
-            // We use default config which tries to find a collision at any point in time
-            // in the future
             query::ShapeCastOptions {
                 stop_at_penetration: false,
                 max_time_of_impact: self.end_time - t,
@@ -165,11 +165,52 @@ impl<'a> Simulation<'a> {
         let impact_signs = -(impact_normal.abs() * 2. - 1.);
 
         Some(SphereSimulationSnapshot {
+            // vel: snap.vel * impact_signs,
+            // ..snap.extrapolate_to(impact_t)
+            
             t: impact_t,
-            pos: pos + vel * result.time_of_impact,
-            // We only care about what is the axis of collision to reverse it
-            vel: vel * impact_signs,
+            pos: snap.pos + snap.vel * result.time_of_impact,
+            vel: snap.vel * impact_signs,
         })
+    }
+
+    #[must_use]
+    fn get_next_sphere_sphere_collision(&self, idx1: usize, idx2: usize, t: f32) -> Option<(SphereSimulationSnapshot, SphereSimulationSnapshot)> {
+        let last_snap1 = self.get_last_sphere_snapshot(idx1, t)?;
+        let snap1 = last_snap1.extrapolate_to(t);
+        let last_snap2 = self.get_last_sphere_snapshot(idx2, t)?;
+        let snap2 = last_snap2.extrapolate_to(t);
+        
+        let sphere1 = &self.world_state.spheres[idx1];
+        let sphere2 = &self.world_state.spheres[idx2];
+
+        // Compute collision from time `t`
+        let result = query::cast_shapes(
+            &pmath::Isometry::translation(snap1.pos.x, snap1.pos.y),
+            &na::vector![snap1.vel.x, snap1.vel.y], &shape::Ball::new(sphere1.radius),
+
+            &pmath::Isometry::translation(snap2.pos.x, snap2.pos.y),
+            &na::vector![snap2.vel.x, snap2.vel.y], &shape::Ball::new(sphere2.radius),
+
+            query::ShapeCastOptions {
+                stop_at_penetration: false,
+                max_time_of_impact: self.end_time - t,
+                ..default()
+            }
+        ).expect("Ball on ball should be supported")?;
+
+        let impact_t = result.time_of_impact + t;
+
+        Some((
+            SphereSimulationSnapshot {
+                vel: snap2.vel,
+                ..snap1.extrapolate_to(impact_t)
+            },
+            SphereSimulationSnapshot {
+                vel: snap1.vel,
+                ..snap2.extrapolate_to(impact_t)
+            },
+        ))
     }
 
     pub fn run(mut self) -> SimulationResult {
@@ -182,27 +223,40 @@ impl<'a> Simulation<'a> {
 
         let mut current_time = start_time;
 
-        while current_time < self.end_time {
+        let mut iterations = 0;
+        while current_time < self.end_time && iterations < MAX_ITERATIONS {
+            iterations += 1;
+
             // Find the next collision hapenning
-            let Some(next_collision_data) = (0..state.spheres.len())
+            let next_collision_datas = (0..state.spheres.len())
                 .filter_map(|sphere_idx|
                     self.get_next_sphere_wall_collision(sphere_idx, current_time)
                         .map(|collision| (sphere_idx, collision))
                 )
-                .reduce(|best, current| if current.1.t < best.1.t { current } else { best })
-            else {
-                // NO collisions detected -> finished
+                .chain(
+                    (0..state.spheres.len()).array_combinations::<2>()
+                    .filter_map(|[idx1, idx2]| {
+                        self.get_next_sphere_sphere_collision(idx1, idx2, current_time)
+                            .map(|(a, b)| [(idx1, a), (idx2, b)])
+                    })
+                    .flatten()
+                )
+                .min_set_by(|best, current| best.1.t.total_cmp(&current.1.t));
+            if next_collision_datas.is_empty() {
                 break;
-            };
+            }
 
-            let (col_sphere_idx, col_snapshot) = next_collision_data;
-
-            println!("current_time = {current_time}");
-            current_time = col_snapshot.t;
-            self.snapshots[col_sphere_idx].push(col_snapshot);
+            if let Some((_, col_snapshot)) = next_collision_datas.first() {
+                debug_assert!(current_time <= col_snapshot.t);
+                current_time = col_snapshot.t;
+            }
+            for (col_sphere_idx, col_snapshot) in next_collision_datas {
+                debug_assert_eq!(current_time, col_snapshot.t);
+                self.snapshots[col_sphere_idx].push(col_snapshot);
+            }
         }
-        println!("current_time = {current_time}");
-        println!("FINISHED");
+        println!("FINISHED in {iterations} iterations");
+        assert!(iterations < MAX_ITERATIONS);
 
         SimulationResult {
             sphere_positions: self.snapshots.iter().map(|snaps| {
