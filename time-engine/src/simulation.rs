@@ -1,13 +1,15 @@
 use crate::{ circle_polygon, clip_shapes_on_portal, default, WorldState };
 
 use glam::f32::Vec2;
+use parry2d::query::RayCast;
 use parry2d::shape::Shape;
 use parry2d::{ math as pmath, query, shape::{self, SharedShape} };
 use nalgebra as na;
 use itertools::Itertools;
-use tinyvec::ArrayVec;
+use tinyvec::{array_vec, ArrayVec};
 
 const MAX_ITERATIONS: usize = 1_000;
+const MAX_STAGNATION: usize = 100;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortalDirection {
@@ -24,6 +26,13 @@ impl PortalDirection {
     pub fn is_back(self) -> bool {
         self == Self::Back
     }
+
+    pub fn swap(self) -> Self {
+        match self {
+            PortalDirection::Front => PortalDirection::Back,
+            PortalDirection::Back => PortalDirection::Front,
+        }
+    }
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -32,6 +41,17 @@ pub struct SpherePortalTraversal {
     pub portal_out_idx: usize,
     pub direction: PortalDirection,
     pub end_t: f32,
+}
+
+impl SpherePortalTraversal {
+    pub fn swap(self) -> Self {
+        Self {
+            portal_in_idx: self.portal_out_idx,
+            portal_out_idx: self.portal_in_idx,
+            direction: self.direction.swap(),
+            end_t: self.end_t,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -188,28 +208,42 @@ impl<'a> Simulation<'a> {
 
     fn get_sphere_shape(&self, idx: usize, t: f32) -> Option<impl Shape> {
         let sphere = self.world_state.spheres.get(idx)?;
-        let snap = self.get_sphere_snapshot(idx, t)?;
+        return Some(shape::Ball::new(sphere.radius));
+        // let snap = self.get_sphere_snapshot(idx, t)?;
 
-        // get a shape for the sphere in world space
-        let mut shapes = vec![vec![circle_polygon(snap.pos, sphere.radius, 30)]];
-        for traversal in &snap.portal_traversals {
-            let portal = &self.world_state.portals[traversal.portal_in_idx];
-            shapes = clip_shapes_on_portal(shapes, portal, PortalDirection::Front);
-        }
+        // // get a shape for the sphere in world space
+        // let mut shapes = vec![vec![circle_polygon(snap.pos, sphere.radius, 30)]];
+        // for traversal in &snap.portal_traversals {
+        //     let portal = &self.world_state.portals[traversal.portal_in_idx];
+        //     shapes = clip_shapes_on_portal(shapes, portal, traversal.direction.swap());
+        // }
+
+        // if shapes.is_empty() {
+        //     return None;
+        // }
         
-        Some(shape::Compound::new(shapes.into_iter().map(|shape| {
-            // only support one contour per shape
-            assert!(shape.len() == 1);
-            let contour = &shape[0];
+        // Some(shape::Compound::new(shapes.into_iter().map(|shape| {
+        //     // only support one contour per shape
+        //     assert!(shape.len() == 1);
+        //     let contour = &shape[0];
 
-            (pmath::Isometry::identity(), SharedShape::new(shape::ConvexPolygon::from_convex_polyline(
-                contour.iter().copied()
-                    // Put the shape back in sphere's local-space
-                    .map(|p| p - snap.pos)
-                    .map(|p| na::vector![p.x, p.y].into())
-                    .collect()
-            ).expect("Is valid")))
-        }).collect()))
+        //     (pmath::Isometry::identity(), SharedShape::new(shape::ConvexPolygon::from_convex_polyline(
+        //         contour.iter().copied()
+        //             // Put the shape back in sphere's local-space
+        //             .map(|p| p - snap.pos)
+        //             .map(|p| na::vector![p.x, p.y].into())
+        //             .collect()
+        //     ).expect("Is valid")))
+        // }).collect()))
+    }
+
+    fn get_portal_shape(&self, idx: usize, _t: f32) -> impl Shape {
+        let portal = &self.world_state.portals[idx];
+        let h2 = portal.height / 2.;
+        shape::Polyline::new(vec![
+            na::point![0., -h2],
+            na::point![0., h2],
+        ], None)
     }
 
     /// Computes when the given sphere will collision with the walls of the
@@ -280,12 +314,131 @@ impl<'a> Simulation<'a> {
         ))
     }
 
-    fn get_next_sphere_portal_collision(&self, sphere_idx: usize, portal_idx: usize, t: f32) -> Option<Vec<SphereSnapshot>> {
+    fn get_next_sphere_portal_traversals_start(&self, sphere_idx: usize, portal_idx: usize, t: f32) -> Option<SphereSnapshot> {
         let snap = self.get_sphere_snapshot(sphere_idx, t)?;
-        let shape = self.get_sphere_shape(sphere_idx, t)?;
+        if snap.portal_traversals.iter().any(|tr| tr.portal_in_idx == portal_idx) {
+            return None;
+        }
+        let sphere = self.world_state.spheres.get(sphere_idx)?;
+        let sphere_shape = self.get_sphere_shape(sphere_idx, t)?;
         let portal = &self.world_state.portals[portal_idx];
+        let portal_shape = self.get_portal_shape(portal_idx, t);
 
-        None
+        // Anoying and imperfect conversion from glam's Isometry to nalgebra's 
+        let plane_iso = {
+            let (scale, angle, trans) = portal.initial_transform.to_scale_angle_translation();
+            assert_eq!(scale, Vec2::splat(1.));
+            pmath::Isometry::from_parts(
+                na::Translation2::new(trans.x, trans.y),
+                na::UnitComplex::from_angle(angle)
+            )
+        };
+
+        let result = query::cast_shapes(
+            &plane_iso,
+            // portal has no velocity
+            &na::vector![0., 0.],
+            &portal_shape,
+
+            &pmath::Isometry::translation(snap.pos.x, snap.pos.y),
+            &na::vector![snap.vel.x, snap.vel.y],
+            &sphere_shape,
+
+            query::ShapeCastOptions {
+                stop_at_penetration: true,
+                max_time_of_impact: self.end_time - t,
+                ..default()
+            }
+        ).expect("Ball on ball should be supported")?;
+
+        let impact_t = result.time_of_impact + t;
+        let impact_snap = snap.extrapolate_to(impact_t);
+
+        let inv_portal_trans = portal.initial_transform.inverse();
+        let rel_vel = inv_portal_trans.transform_vector2(impact_snap.vel);
+        let rel_pos = inv_portal_trans.transform_point2(impact_snap.pos);
+
+        // Finding when the sphere wont intersect with the portal anymore
+        // nothing in parry2d can help so we hardcode a sphere-line solution
+        let exit_dt = {
+            let t0 = (sphere.radius - rel_pos.x) / rel_vel.x;
+            let t1 = (- sphere.radius - rel_pos.x) / rel_vel.x;
+            let min = t0.min(t1);
+            let max = t0.max(t1);
+
+            if max <= 0.0001 {
+                unreachable!("Never exits ?");
+            }
+            // Return the first positive value
+            if min <= 0.0001 {
+                max
+            }
+            else {
+                min
+            }
+        };
+
+        let direction = if rel_pos.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
+        // println!("{snap:?}");
+        // println!("ball {sphere_idx} touches p{portal_idx} on {direction:?} ({t}s) at {impact_t}s exists at {}s (dt {exit_dt}s)", impact_t + exit_dt);
+
+        let mut portal_traversals = impact_snap.portal_traversals;
+        portal_traversals.push(SpherePortalTraversal {
+            portal_in_idx: portal_idx,
+            portal_out_idx: portal.link_to,
+            direction,
+            end_t: impact_t + exit_dt,
+        });
+
+        Some(SphereSnapshot {
+            portal_traversals,
+            ..impact_snap
+        })
+    }
+
+    fn get_next_sphere_portal_traversals_end(&self, sphere_idx: usize, portal_idx: usize, t: f32) -> Option<[SphereSnapshot; 2]> {
+        let snap = self.get_sphere_snapshot(sphere_idx, t)?;
+        if !snap.portal_traversals.iter().any(|tr| tr.portal_in_idx == portal_idx) {
+            return None;
+        }
+        let portal = &self.world_state.portals[portal_idx];
+        let out_portal_idx = portal.link_to;
+        let out_portal = &self.world_state.portals[out_portal_idx];
+
+        let inv_portal_trans = portal.initial_transform.inverse();
+        let rel_vel = inv_portal_trans.transform_vector2(snap.vel);
+        let rel_pos = inv_portal_trans.transform_point2(snap.pos);
+
+        // compute when the center of the sphere touches the portal
+        // nothing in parry2d can help so we hardcode the solution
+        let impact_dt = -rel_pos.x / rel_vel.x;
+        // Impact in the past or alread on the impact -> nothing to be done
+        if impact_dt <= 0. {
+            return None;
+        }
+
+        let impact_t = t + impact_dt;
+
+        let impact_snap = snap.extrapolate_to(impact_t + 0.00001);
+        let after_impact_snap = SphereSnapshot {
+            portal_traversals: impact_snap.portal_traversals.into_iter().map(|traversal| {
+                if traversal.portal_in_idx == portal_idx {
+                    traversal.swap()
+                }
+                else {
+                    traversal
+                }
+            }).collect(),
+            pos: out_portal.initial_transform.transform_point2(inv_portal_trans.transform_point2(impact_snap.pos)),
+            vel: out_portal.initial_transform.transform_vector2(inv_portal_trans.transform_vector2(impact_snap.vel)),
+            ..impact_snap
+        };
+
+        // println!("{snap:?}");
+        // println!("ball {sphere_idx} teleport from p{portal_idx} to p{out_portal_idx} ({t}s) at {impact_t}s (dt {impact_dt}s)");
+        // println!("{impact_snap:?}\n{after_impact_snap:?}");
+
+        Some([impact_snap, after_impact_snap])
     }
 
     pub fn run(mut self) -> SimulationResult {
@@ -299,7 +452,10 @@ impl<'a> Simulation<'a> {
         let mut current_time = start_time;
 
         let mut iterations = 0;
+        // Used to detect when the same collision is detected multiple times
+        let mut stagnation = 0;
         while current_time < self.end_time && iterations < MAX_ITERATIONS {
+            // println!("\n{iterations}");
             iterations += 1;
 
             // Find the next collision hapenning
@@ -310,24 +466,53 @@ impl<'a> Simulation<'a> {
                 )
                 .chain(
                     (0..state.spheres.len()).array_combinations::<2>()
-                    .filter_map(|[idx1, idx2]| {
+                    .flat_map(|[idx1, idx2]| {
                         self.get_next_sphere_sphere_collision(idx1, idx2, current_time)
-                            .map(|(a, b)| [(idx1, a), (idx2, b)])
+                            .into_iter()
+                            .flat_map(move |(a, b)| [(idx1, a), (idx2, b)])
                     })
-                    .flatten()
+                )
+                .chain(
+                    (0..state.spheres.len())
+                    .cartesian_product(0..state.portals.len())
+                    .flat_map(|(sphere_idx, portal_idx)| {
+                        self.get_next_sphere_portal_traversals_start(sphere_idx, portal_idx, current_time)
+                            .into_iter()
+                            .map(move |snapshot| (sphere_idx, snapshot))
+                    })
+                )
+                .chain(
+                    (0..state.spheres.len())
+                    .cartesian_product(0..state.portals.len())
+                    .flat_map(|(sphere_idx, portal_idx)| {
+                        self.get_next_sphere_portal_traversals_end(sphere_idx, portal_idx, current_time)
+                            .into_iter()
+                            .flatten()
+                            .map(move |snapshot| (sphere_idx, snapshot))
+                    })
                 )
                 .min_set_by(|best, current| best.1.t.total_cmp(&current.1.t));
             if next_collision_datas.is_empty() {
                 break;
             }
 
-            debug_assert!(
-                next_collision_datas.iter().map(|(sphere_idx, _)| sphere_idx)
-                .all_unique()
-            );
+            // debug_assert!(
+            //     next_collision_datas.iter().map(|(sphere_idx, _)| sphere_idx)
+            //     .all_unique()
+            // );
 
             if let Some((_, col_snapshot)) = next_collision_datas.first() {
                 debug_assert!(current_time <= col_snapshot.t);
+                if current_time == col_snapshot.t {
+                    stagnation += 1;
+                }
+                else {
+                    stagnation = 0;
+                }
+                if stagnation > MAX_STAGNATION {
+                    eprintln!("Stagnation detected on {current_time}s ({next_collision_datas:#?})");
+                    break;
+                }
                 current_time = col_snapshot.t;
             }
             for (col_sphere_idx, col_snapshot) in next_collision_datas {

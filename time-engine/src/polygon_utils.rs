@@ -25,8 +25,9 @@ pub fn clip_shapes_on_portal(
     portal: &Portal,
     direction: PortalDirection,
 ) -> Shapes<Vec2> {
-    let start = portal.initial_transform.transform_point2(Vec2::new(0., -9999.));
-    let end = portal.initial_transform.transform_point2(Vec2::new(0., 9999.));
+    let h2 = portal.height / 2.;
+    let start = portal.initial_transform.transform_point2(Vec2::new(0., -h2));
+    let end = portal.initial_transform.transform_point2(Vec2::new(0., h2));
 
     let normal = portal.initial_transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
     let normal = match direction {

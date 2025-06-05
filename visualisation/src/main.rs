@@ -1,7 +1,7 @@
 mod draw_polygon;
 use draw_polygon::*;
 
-use i_overlay::i_shape::base::data::Shapes;
+use i_overlay::{i_shape::base::data::Shapes, mesh::{outline::offset::OutlineOffset, style::OutlineStyle}};
 use time_engine as te;
 use macroquad::{ prelude::*, ui::{ self, root_ui } };
 
@@ -30,7 +30,7 @@ async fn main() {
         sim.push_portal(te::Portal {
             height: 20.,
             initial_transform: Affine2::from_angle_translation(
-                0.,
+                std::f32::consts::PI,
                 Vec2::new(90., 50.),
             ),
             link_to: 0,
@@ -61,9 +61,9 @@ async fn main() {
 
     let mut cam_offset = Vec2::ZERO;
     let mut zoom = 1.;
-    let mut sim_start: f32 = 0.;
-    let mut paused_at: f32 = 0.;
     let mut paused = true;
+    let mut sim_t = 0.;
+    let mut sim_speed = 1.;
 
     let mouse_pos = |camera: &Camera2D| {
         camera.screen_to_world(Vec2::new(mouse_position().0, mouse_position().1))
@@ -83,10 +83,11 @@ async fn main() {
     }
 
     loop {
-        let mut t = get_time() as f32 - sim_start;
-        if t > sim_duration {
-            sim_start = get_time() as f32;
-            t = 0.;
+        if !paused {
+            sim_t += get_frame_time() * sim_speed;
+        }
+        if sim_t > sim_duration {
+            sim_t = 0.;
         }
 
         // Setup camera
@@ -109,21 +110,11 @@ async fn main() {
             cam_offset = Vec2::ZERO;
             zoom = 1.;
 
-            sim_start = get_time() as f32;
-            t = 0.;
-            paused_at = 0.;
+            sim_t = 0.;
         }
 
         if is_key_pressed(KeyCode::Space) {
             paused = !paused;
-            if paused {
-                paused_at = t;
-            }
-        }
-
-        if paused {
-            sim_start = get_time() as f32 - paused_at;
-            t = paused_at;
         }
 
         camera.target = cam_offset + cam_centering_offset;
@@ -156,27 +147,32 @@ async fn main() {
         // Drawing
         clear_background(BLACK);
 
+        // Draw the simulation bounding box
         draw_rectangle_lines(-2.5, -2.5, sim.width() + 5., sim.height() + 5., 5., WHITE);
 
         for sphere in &simulation_result.spheres {
-            let Some(snap) = sphere.interpolate_snapshot(t)
+            let Some(snap) = sphere.interpolate_snapshot(sim_t)
             else { continue };
 
-            let mut sphere_polygon: Shapes<Vec2> = vec![vec![te::circle_polygon(snap.pos, sphere.radius, 30)]];
+            let mut sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(snap.pos, sphere.radius, 30)]];
             for traversal in snap.portal_traversals {
-                if traversal.end_t < t {
+                if traversal.end_t < sim_t {
                     continue
                 }
 
-                let portal = &sim.portals()[traversal.portal_in_idx];
-                sphere_polygon = te::clip_shapes_on_portal(sphere_polygon, portal, traversal.direction);
+                let portal_in = &sim.portals()[traversal.portal_in_idx];
+                let portal_ou = &sim.portals()[traversal.portal_out_idx];
+
+                // Make a new ball mesh at the output portal
+                let in_relative_pos = portal_in.initial_transform.inverse().transform_point2(snap.pos);
+                let out_pos = portal_ou.initial_transform.transform_point2(in_relative_pos);
+                sphere_shapes.push(vec![te::circle_polygon(out_pos, sphere.radius, 30)]);
+
+                sphere_shapes = te::clip_shapes_on_portal(sphere_shapes, portal_in, traversal.direction);
+                sphere_shapes = te::clip_shapes_on_portal(sphere_shapes, portal_ou, traversal.direction.swap());
             }
 
-            for p in &sphere_polygon {
-                for p in p {
-                    draw_polygon(Vec2::ZERO, p, WHITE);
-                }
-            }
+            draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE);
             let text = &format!("{:.01}", snap.age);
 
             let size = 32;
@@ -197,14 +193,32 @@ async fn main() {
             let start = portal.initial_transform.transform_point2(Vec2::new(0., -h2));
             let end = portal.initial_transform.transform_point2(Vec2::new(0., h2));
             let normal = portal.initial_transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
-            draw_line(middle.x, middle.y, middle.x + normal.x, middle.y + normal.y, 0.5, LIME);
+            draw_line(middle.x, middle.y, middle.x + normal.x, middle.y + normal.y, 0.5, GREEN.with_alpha(0.25));
             draw_line(start.x, start.y, end.x, end.y, 1., GREEN);
         }
 
         root_ui().label(None, &format!("fps: {}", get_fps()));
-        root_ui().label(None, &format!("time: {t:.02}s/{sim_duration:.02}s"));
+        root_ui().label(None, &format!("time: {sim_t:.02}s/{sim_duration:.02}s"));
         if paused {
             root_ui().label(None, "PAUSED");
+        }
+
+        root_ui().label(None, &format!("speed: {sim_speed:.02}x"));
+        root_ui().same_line(0.);
+        if root_ui().button(None, "1x") {
+            sim_speed = 1.;
+        }
+        root_ui().same_line(0.);
+        if root_ui().button(None, "0.5x") {
+            sim_speed = 0.5;
+        }
+        root_ui().same_line(0.);
+        if root_ui().button(Vec2::new(5., 0.), "Faster") {
+            sim_speed *= 1.5;
+        }
+        root_ui().same_line(0.);
+        if root_ui().button(None, "Slower") {
+            sim_speed /= 1.5;
         }
 
         next_frame().await;

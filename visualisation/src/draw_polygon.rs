@@ -1,10 +1,9 @@
-use time_engine as te;
-
+use i_overlay::i_shape::base::data::Shapes;
 use macroquad::prelude::*;
 use i_triangle::float::triangulatable::Triangulatable;
 
-pub fn draw_polygon(pos: Vec2, points: &[Vec2], color: Color) {
-    let triangulation = points.triangulate().to_triangulation();
+pub fn draw_shapes(pos: Vec2, shapes: &Shapes<Vec2>, color: Color) {
+    let triangulation = shapes.triangulate().to_triangulation();
 
     let mesh = Mesh {
         vertices: triangulation.points.iter().map(|point| {
@@ -20,9 +19,4 @@ pub fn draw_polygon(pos: Vec2, points: &[Vec2], color: Color) {
     };
 
     draw_mesh(&mesh);
-}
-
-pub fn draw_polygon_circle(center: Vec2, radius: f32, segments: u32, color: Color) {
-    let polygon = te::circle_polygon(Vec2::ZERO, radius, segments);
-    draw_polygon(center, &polygon, color);
 }
