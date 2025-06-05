@@ -43,6 +43,10 @@ impl WorldState {
         &self.spheres
     }
 
+    pub fn portals(&self) -> &[Portal] {
+        &self.portals
+    }
+
     pub fn push_sphere(&mut self, sphere: Sphere) {
         self.spheres.push(sphere);
     }

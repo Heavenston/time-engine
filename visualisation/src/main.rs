@@ -12,26 +12,40 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let sim_duration = 30f32;
+    let sim_duration = 60f32;
     let sim = {
         let mut sim = te::WorldState::new(100., 100.);
-        sim.push_sphere(te::Sphere {
-            initial_time: 0.,
-            initial_pos: glam::Vec2::new(50., 50.),
-            initial_velocity: glam::Vec2::new(20., 30.),
-            radius: 5.,
+        sim.push_portal(te::Portal {
+            height: 20.,
+            initial_transform: Affine2::from_angle_translation(
+                std::f32::consts::FRAC_PI_2,
+                Vec2::new(50., 85.),
+            )
+        });
+        sim.push_portal(te::Portal {
+            height: 20.,
+            initial_transform: Affine2::from_angle_translation(
+                0.,
+                Vec2::new(85., 50.),
+            )
         });
         sim.push_sphere(te::Sphere {
             initial_time: 0.,
-            initial_pos: glam::Vec2::new(20., 50.),
+            initial_pos: glam::Vec2::new(50., 50.),
+            initial_velocity: glam::Vec2::new(0., 30.),
+            radius: 3.,
+        });
+        sim.push_sphere(te::Sphere {
+            initial_time: 0.,
+            initial_pos: glam::Vec2::new(20., 6.),
             initial_velocity: glam::Vec2::new(30., 20.),
-            radius: 5.,
+            radius: 3.,
         });
         sim.push_sphere(te::Sphere {
             initial_time: 0.,
             initial_pos: glam::Vec2::new(20., 20.),
             initial_velocity: glam::Vec2::new(10., 10.),
-            radius: 5.,
+            radius: 3.,
         });
         sim
     };
@@ -122,11 +136,17 @@ async fn main() {
 
         draw_rectangle_lines(-2.5, -2.5, sim.width() + 5., sim.height() + 5., 5., WHITE);
 
-        for idx in 0..simulation_result.sphere_count() {
-            let sphere = &sim.spheres()[idx];
+        for (idx, sphere) in sim.spheres().iter().enumerate() {
             let Some(pos) = simulation_result.get_sphere_pos(idx, t)
             else { continue };
             draw_circle(pos.x, pos.y, sphere.radius, WHITE);
+        }
+
+        for portal in sim.portals() {
+            let h2 = portal.height / 2.;
+            let start = portal.initial_transform.transform_point2(Vec2::new(0., -h2));
+            let end = portal.initial_transform.transform_point2(Vec2::new(0., h2));
+            draw_line(start.x, start.y, end.x, end.y, 1., GREEN);
         }
 
         root_ui().label(None, &format!("time: {t:.02}s/{sim_duration:.02}s"));
