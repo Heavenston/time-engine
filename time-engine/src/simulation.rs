@@ -35,7 +35,7 @@ impl SimulationResult {
 
         // Find the first snapshot that is after the given time
         let (after_idx, after) = positions.iter().enumerate()
-            .find_or_last(|(_, snap)| snap.t >= t)?;
+            .find(|(_, snap)| snap.t >= t)?;
 
         // The first snapshot is after the given time so the sphere is not
         // spawned yet
@@ -137,13 +137,25 @@ impl<'a> Simulation<'a> {
         }
     }
 
+    fn get_sphere_snapshot(&self, idx: usize, t: f32) -> Option<SphereSimulationSnapshot> {
+        let sphere = self.world_state.spheres.get(idx)?;
+
+        if sphere.initial_time + sphere.max_age < t {
+            None
+        }
+        else {
+            // If not snapshot is available before t, this means the sphere does not exist
+            // at this time
+            let last_snap = self.get_last_sphere_snapshot(idx, t)?;
+            Some(last_snap.extrapolate_to(t))
+        }
+    }
+
     /// Computes when the given sphere will collision with the walls of the
     /// simulation, giving a snapshot of its position if any collision is found
     #[must_use]
     fn get_next_sphere_wall_collision(&self, idx: usize, t: f32) -> Option<SphereSimulationSnapshot> {
-        let last_snap = self.get_last_sphere_snapshot(idx, t)?;
-        // The snapshot at time `t`
-        let snap = last_snap.extrapolate_to(t);
+        let snap = self.get_sphere_snapshot(idx, t)?;
         
         let sphere = &self.world_state.spheres[idx];
         // Compute collision from time `t`
@@ -176,10 +188,8 @@ impl<'a> Simulation<'a> {
 
     #[must_use]
     fn get_next_sphere_sphere_collision(&self, idx1: usize, idx2: usize, t: f32) -> Option<(SphereSimulationSnapshot, SphereSimulationSnapshot)> {
-        let last_snap1 = self.get_last_sphere_snapshot(idx1, t)?;
-        let snap1 = last_snap1.extrapolate_to(t);
-        let last_snap2 = self.get_last_sphere_snapshot(idx2, t)?;
-        let snap2 = last_snap2.extrapolate_to(t);
+        let snap1 = self.get_sphere_snapshot(idx1, t)?;
+        let snap2 = self.get_sphere_snapshot(idx2, t)?;
         
         let sphere1 = &self.world_state.spheres[idx1];
         let sphere2 = &self.world_state.spheres[idx2];
@@ -259,13 +269,15 @@ impl<'a> Simulation<'a> {
         assert!(iterations < MAX_ITERATIONS);
 
         SimulationResult {
-            sphere_positions: self.snapshots.iter().map(|snaps| {
+            sphere_positions: self.snapshots.iter().enumerate().map(|(idx, snaps)| {
+                let sphere = &self.world_state.spheres[idx];
+                let end = self.end_time.min(sphere.initial_time + sphere.max_age);
                 let mut out = snaps.iter().copied()
                     .map_into::<SpherePositionSnapshot>()
                     .collect_vec();
                 // Add a last snapshot at the end of the simulation
-                if let Some(last) = snaps.last() { if last.t < self.end_time {
-                    out.push(last.extrapolate_to(self.end_time).into());
+                if let Some(last) = snaps.last() { if last.t < end {
+                    out.push(last.extrapolate_to(end).into());
                 } }
                 out
             }).collect_vec(),

@@ -30,22 +30,24 @@ async fn main() {
             )
         });
         sim.push_sphere(te::Sphere {
-            initial_time: 0.,
+            max_age: 10.,
             initial_pos: glam::Vec2::new(50., 50.),
             initial_velocity: glam::Vec2::new(0., 30.),
             radius: 3.,
+            ..Default::default()
         });
         sim.push_sphere(te::Sphere {
-            initial_time: 0.,
+            initial_time: 2.5,
             initial_pos: glam::Vec2::new(20., 6.),
             initial_velocity: glam::Vec2::new(30., 20.),
             radius: 3.,
+            ..Default::default()
         });
         sim.push_sphere(te::Sphere {
-            initial_time: 0.,
             initial_pos: glam::Vec2::new(20., 20.),
             initial_velocity: glam::Vec2::new(10., 10.),
             radius: 3.,
+            ..Default::default()
         });
         sim
     };

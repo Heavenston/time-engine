@@ -4,9 +4,22 @@ use glam::f32::{ Vec2, Affine2 };
 
 pub struct Sphere {
     pub initial_time: f32,
+    pub max_age: f32,
     pub initial_pos: Vec2,
     pub initial_velocity: Vec2,
     pub radius: f32,
+}
+
+impl Default for Sphere {
+    fn default() -> Self {
+        Self {
+            initial_time: 0.,
+            max_age: f32::INFINITY,
+            initial_pos: Vec2::ZERO,
+            initial_velocity: Vec2::ZERO,
+            radius: 1.,
+        }
+    }
 }
 
 pub struct Portal {
