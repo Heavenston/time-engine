@@ -1,9 +1,7 @@
 mod draw_polygon;
 use draw_polygon::*;
 
-use i_overlay::{core::fill_rule::FillRule, i_shape::base::data::Shapes};
-use i_overlay::core::overlay_rule::OverlayRule;
-use i_overlay::float::single::SingleFloatOverlay;
+use i_overlay::i_shape::base::data::Shapes;
 use time_engine as te;
 use macroquad::{ prelude::*, ui::{ self, root_ui } };
 
@@ -161,21 +159,17 @@ async fn main() {
         draw_rectangle_lines(-2.5, -2.5, sim.width() + 5., sim.height() + 5., 5., WHITE);
 
         for sphere in &simulation_result.spheres {
-            let Some(snap) = sphere.get_pos(t)
+            let Some(snap) = sphere.interpolate_snapshot(t)
             else { continue };
 
-            let mut sphere_polygon: Shapes<Vec2> = vec![vec![circle_polygon(snap.pos, sphere.radius, 30)]];
-            for portal in sim.portals() {
-                let start = portal.initial_transform.transform_point2(Vec2::new(0., -9999.));
-                let end = portal.initial_transform.transform_point2(Vec2::new(0., 9999.));
-                let normal = portal.initial_transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
-                let clip_polygon = [
-                    start,
-                    end,
-                    end - normal,
-                    start - normal,
-                ];
-                sphere_polygon = sphere_polygon.overlay(&clip_polygon, OverlayRule::Difference, FillRule::EvenOdd);
+            let mut sphere_polygon: Shapes<Vec2> = vec![vec![te::circle_polygon(snap.pos, sphere.radius, 30)]];
+            for traversal in snap.portal_traversals {
+                if traversal.end_t < t {
+                    continue
+                }
+
+                let portal = &sim.portals()[traversal.portal_in_idx];
+                sphere_polygon = te::clip_shapes_on_portal(sphere_polygon, portal, traversal.direction);
             }
 
             for p in &sphere_polygon {
