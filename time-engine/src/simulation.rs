@@ -12,6 +12,24 @@ pub struct SpherePositionSnapshot {
     pub t: f32,
     pub pos: Vec2,
     pub age: f32,
+    pub vel: Vec2,
+}
+
+impl SpherePositionSnapshot {
+    pub fn extrapolate_after(&self, dt: f32) -> Self {
+        assert!(dt >= 0.);
+        Self {
+            t: self.t + dt,
+            pos: self.pos + self.vel * dt,
+            vel: self.vel,
+            age: self.age + dt,
+        }
+    }
+
+    pub fn extrapolate_to(&self, t: f32) -> Self {
+        assert!(t >= self.t);
+        self.extrapolate_after(t - self.t)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +64,7 @@ impl SimulatedSphere {
             t,
             pos: before.pos.lerp(after.pos, lerp_fact),
             age: before.age + ((after.age - before.age) * lerp_fact),
+            vel: before.vel + ((after.vel - before.vel) * lerp_fact),
         })
     }
 }
@@ -61,48 +80,17 @@ impl SimulationResult {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SphereSimulationSnapshot {
-    t: f32,
-    pos: Vec2,
-    vel: Vec2,
-    age: f32,
-}
-
-impl SphereSimulationSnapshot {
-    pub fn extrapolate_after(&self, dt: f32) -> Self {
-        assert!(dt >= 0.);
-        Self {
-            t: self.t + dt,
-            pos: self.pos + self.vel * dt,
-            vel: self.vel,
-            age: self.age + dt,
-        }
-    }
-
-    pub fn extrapolate_to(&self, t: f32) -> Self {
-        assert!(t >= self.t);
-        self.extrapolate_after(t - self.t)
-    }
-}
-
-impl From<SphereSimulationSnapshot> for SpherePositionSnapshot {
-    fn from(val: SphereSimulationSnapshot) -> Self {
-        SpherePositionSnapshot { t: val.t, pos: val.pos, age: val.age }
-    }
-}
-
 pub(crate) struct Simulation<'a> {
     world_state: &'a WorldState,
     end_time: f32,
-    snapshots: Vec<Vec<SphereSimulationSnapshot>>,
+    snapshots: Vec<Vec<SpherePositionSnapshot>>,
     /// Shape of the simulation's walls
     box_shape: shape::Compound,
 }
 
 impl<'a> Simulation<'a> {
     pub fn new(state: &'a WorldState, end_time: f32) -> Self {
-        let snapshots = state.spheres.iter().map(|sphere| vec![SphereSimulationSnapshot {
+        let snapshots = state.spheres.iter().map(|sphere| vec![SpherePositionSnapshot {
             t: sphere.initial_time,
             pos: sphere.initial_pos,
             vel: sphere.initial_velocity,
@@ -130,7 +118,7 @@ impl<'a> Simulation<'a> {
     /// point in time.
     /// If Some is returned, asserts that this is the last snapshot, so pushing
     /// into the snapshot vec adds it just after the returned one.
-    fn get_last_sphere_snapshot(&self, idx: usize, t: f32) -> Option<&SphereSimulationSnapshot> {
+    fn get_last_sphere_snapshot(&self, idx: usize, t: f32) -> Option<&SpherePositionSnapshot> {
         let snaps = &self.snapshots.get(idx)?;
 
         debug_assert!(snaps.iter().map(|snap| snap.t).is_sorted());
@@ -144,7 +132,7 @@ impl<'a> Simulation<'a> {
         }
     }
 
-    fn get_sphere_snapshot(&self, idx: usize, t: f32) -> Option<SphereSimulationSnapshot> {
+    fn get_sphere_snapshot(&self, idx: usize, t: f32) -> Option<SpherePositionSnapshot> {
         let sphere = self.world_state.spheres.get(idx)?;
 
         if sphere.initial_time + sphere.max_age < t {
@@ -161,7 +149,7 @@ impl<'a> Simulation<'a> {
     /// Computes when the given sphere will collision with the walls of the
     /// simulation, giving a snapshot of its position if any collision is found
     #[must_use]
-    fn get_next_sphere_wall_collision(&self, idx: usize, t: f32) -> Option<SphereSimulationSnapshot> {
+    fn get_next_sphere_wall_collision(&self, idx: usize, t: f32) -> Option<SpherePositionSnapshot> {
         let snap = self.get_sphere_snapshot(idx, t)?;
         
         let sphere = &self.world_state.spheres[idx];
@@ -183,7 +171,7 @@ impl<'a> Simulation<'a> {
         let impact_normal = Vec2::new(result.normal1.x, result.normal1.y);
         let impact_signs = -(impact_normal.abs() * 2. - 1.);
 
-        Some(SphereSimulationSnapshot {
+        Some(SpherePositionSnapshot {
             vel: snap.vel * impact_signs,
             ..snap.extrapolate_to(impact_t)
             
@@ -195,7 +183,7 @@ impl<'a> Simulation<'a> {
     }
 
     #[must_use]
-    fn get_next_sphere_sphere_collision(&self, idx1: usize, idx2: usize, t: f32) -> Option<(SphereSimulationSnapshot, SphereSimulationSnapshot)> {
+    fn get_next_sphere_sphere_collision(&self, idx1: usize, idx2: usize, t: f32) -> Option<(SpherePositionSnapshot, SpherePositionSnapshot)> {
         let snap1 = self.get_sphere_snapshot(idx1, t)?;
         let snap2 = self.get_sphere_snapshot(idx2, t)?;
         
@@ -220,11 +208,11 @@ impl<'a> Simulation<'a> {
         let impact_t = result.time_of_impact + t;
 
         Some((
-            SphereSimulationSnapshot {
+            SpherePositionSnapshot {
                 vel: snap2.vel,
                 ..snap1.extrapolate_to(impact_t)
             },
-            SphereSimulationSnapshot {
+            SpherePositionSnapshot {
                 vel: snap1.vel,
                 ..snap2.extrapolate_to(impact_t)
             },
@@ -284,13 +272,13 @@ impl<'a> Simulation<'a> {
         SimulationResult {
             spheres: self.snapshots.iter().enumerate().map(|(idx, snaps)| {
                 let sphere = &self.world_state.spheres[idx];
-                let end = self.end_time.min(sphere.initial_time + sphere.max_age);
+                let sphere_end = self.end_time.min(sphere.initial_time + sphere.max_age);
                 let mut out = snaps.iter().copied()
                     .map_into::<SpherePositionSnapshot>()
                     .collect_vec();
                 // Add a last snapshot at the end of the simulation
-                if let Some(last) = snaps.last() { if last.t < end {
-                    out.push(last.extrapolate_to(end).into());
+                if let Some(last) = snaps.last() { if last.t < sphere_end {
+                    out.push(last.extrapolate_to(sphere_end));
                 } }
 
                 SimulatedSphere {
