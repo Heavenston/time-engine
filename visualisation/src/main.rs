@@ -56,6 +56,8 @@ async fn main() {
     let mut cam_offset = Vec2::ZERO;
     let mut zoom = 1.;
     let mut sim_start: f32 = 0.;
+    let mut paused_at: f32 = 0.;
+    let mut paused = false;
 
     let mouse_pos = |camera: &Camera2D| {
         camera.screen_to_world(Vec2::new(mouse_position().0, mouse_position().1))
@@ -64,6 +66,7 @@ async fn main() {
     // Setup ui skin
     {
         let label_style = root_ui().style_builder()
+            .font_size(32)
             .text_color(WHITE)
             .build();
         let skin = ui::Skin {
@@ -102,6 +105,19 @@ async fn main() {
 
             sim_start = get_time() as f32;
             t = 0.;
+            paused_at = 0.;
+        }
+
+        if is_key_pressed(KeyCode::Space) {
+            paused = !paused;
+            if paused {
+                paused_at = t;
+            }
+        }
+
+        if paused {
+            sim_start = get_time() as f32 - paused_at;
+            t = paused_at;
         }
 
         camera.target = cam_offset + cam_centering_offset;
@@ -162,6 +178,9 @@ async fn main() {
         }
 
         root_ui().label(None, &format!("time: {t:.02}s/{sim_duration:.02}s"));
+        if paused {
+            root_ui().label(None, "PAUSED");
+        }
 
         next_frame().await;
     }
