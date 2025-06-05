@@ -23,7 +23,7 @@ async fn main() {
             height: 20.,
             initial_transform: Affine2::from_angle_translation(
                 std::f32::consts::FRAC_PI_2,
-                Vec2::new(50., 90.),
+                Vec2::new(50., 98.),
             ),
             link_to: 1,
         });
@@ -31,7 +31,7 @@ async fn main() {
             height: 20.,
             initial_transform: Affine2::from_angle_translation(
                 std::f32::consts::PI,
-                Vec2::new(90., 50.),
+                Vec2::new(70., 50.),
             ),
             link_to: 0,
         });
@@ -41,18 +41,18 @@ async fn main() {
             radius: 3.,
             ..Default::default()
         });
-        sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(20., 6.),
-            initial_velocity: glam::Vec2::new(30., 20.),
-            radius: 3.,
-            ..Default::default()
-        });
-        sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(20., 20.),
-            initial_velocity: glam::Vec2::new(10., 10.),
-            radius: 3.,
-            ..Default::default()
-        });
+        // sim.push_sphere(te::Sphere {
+        //     initial_pos: glam::Vec2::new(20., 6.),
+        //     initial_velocity: glam::Vec2::new(30., 20.),
+        //     radius: 3.,
+        //     ..Default::default()
+        // });
+        // sim.push_sphere(te::Sphere {
+        //     initial_pos: glam::Vec2::new(20., 20.),
+        //     initial_velocity: glam::Vec2::new(10., 10.),
+        //     radius: 3.,
+        //     ..Default::default()
+        // });
         sim
     };
     println!("Simulating...");
@@ -172,6 +172,19 @@ async fn main() {
                 sphere_shapes = te::clip_shapes_on_portal(sphere_shapes, portal_ou, traversal.direction.swap());
             }
 
+            if !snap.portal_traversals.is_empty() {
+                let outline = sphere_shapes.outline(&OutlineStyle {
+                    outer_offset: 0.5,
+                    inner_offset: 0.5,
+                    join: i_overlay::mesh::style::LineJoin::Round(1.),
+                });
+                let color = if snap.portal_traversals[0].direction.is_front() {
+                    RED
+                } else {
+                    BLUE
+                };
+                draw_shapes(Vec2::ZERO, &outline, color);
+            }
             draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE);
             let text = &format!("{:.01}", snap.age);
 

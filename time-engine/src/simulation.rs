@@ -75,7 +75,7 @@ impl SphereSnapshot {
             vel: self.vel,
             age: self.age + dt,
             portal_traversals: self.portal_traversals.iter().copied()
-                .filter(|traversal| traversal.end_t >= t)
+                .filter(|traversal| traversal.end_t > t)
                 .collect(),
         }
     }
@@ -213,6 +213,7 @@ impl<'a> Simulation<'a> {
         // get a shape for the sphere in world space
         let mut shapes = vec![vec![circle_polygon(snap.pos, sphere.radius, 30)]];
         for traversal in &snap.portal_traversals {
+            assert!(traversal.end_t > t);
             let portal = &self.world_state.portals[traversal.portal_in_idx];
             shapes = clip_shapes_on_portal(shapes, portal, traversal.direction.swap());
         }
