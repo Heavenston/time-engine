@@ -1,5 +1,5 @@
 use time_engine as te;
-use macroquad::prelude::{camera::mouse, *};
+use macroquad::{ prelude::*, ui::{ self, root_ui } };
 
 const CAMERA_ZOOM_SPEED: f32 = 1.25;
 
@@ -12,16 +12,61 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let sim = te::Simulation::new(100., 100.);
+    let sim_duration = 30f32;
+    let sim = {
+        let mut sim = te::WorldState::new(100., 100.);
+        sim.push_sphere(te::Sphere {
+            initial_time: 0.,
+            initial_pos: glam::Vec2::new(50., 50.),
+            initial_velocity: glam::Vec2::new(20., 30.),
+            radius: 5.,
+        });
+        sim.push_sphere(te::Sphere {
+            initial_time: 0.,
+            initial_pos: glam::Vec2::new(20., 50.),
+            initial_velocity: glam::Vec2::new(30., 20.),
+            radius: 5.,
+        });
+        sim.push_sphere(te::Sphere {
+            initial_time: 0.,
+            initial_pos: glam::Vec2::new(20., 20.),
+            initial_velocity: glam::Vec2::new(10., 10.),
+            radius: 5.,
+        });
+        sim
+    };
+    println!("Simulating...");
+    let simulation_result = sim.simulate(sim_duration);
+    println!("Finished simulation");
 
     let mut cam_offset = Vec2::ZERO;
     let mut zoom = 1.;
+    let mut sim_start: f32 = 0.;
 
     let mouse_pos = |camera: &Camera2D| {
         camera.screen_to_world(Vec2::new(mouse_position().0, mouse_position().1))
     };
 
+    // Setup ui skin
+    {
+        let label_style = root_ui().style_builder()
+            .text_color(WHITE)
+            .build();
+        let skin = ui::Skin {
+            label_style,
+            ..root_ui().default_skin()
+        };
+        root_ui().push_skin(&skin);
+    }
+
     loop {
+        let mut t = get_time() as f32 - sim_start;
+        if t > sim_duration {
+            sim_start = get_time() as f32;
+            t = 0.;
+        }
+
+        // Setup camera
         let (cw, ch) = if screen_width() > screen_height() {
             ((screen_width() / screen_height()) * sim.height(), sim.height())
         } else {
@@ -36,17 +81,19 @@ async fn main() {
         let cam_centering_zoom = camera.zoom;
         let cam_centering_offset = camera.target;
 
-        // Handle camera panning inputs
+        // Handle inputs
         if is_key_pressed(KeyCode::R) {
             cam_offset = Vec2::ZERO;
             zoom = 1.;
+
+            sim_start = get_time() as f32;
+            t = 0.;
         }
 
         camera.target = cam_offset + cam_centering_offset;
         camera.zoom = cam_centering_zoom * zoom;
 
         if is_mouse_button_down(MouseButton::Left) {
-            println!("camera.zoom = {}", camera.zoom);
             cam_offset += mouse_delta_position() / camera.zoom;
         }
 
@@ -75,7 +122,14 @@ async fn main() {
 
         draw_rectangle_lines(-2.5, -2.5, sim.width() + 5., sim.height() + 5., 5., WHITE);
 
-        draw_circle(screen_width() / 2., screen_height() / 2., 10., WHITE);
+        for idx in 0..simulation_result.sphere_count() {
+            let sphere = &sim.spheres()[idx];
+            let Some(pos) = simulation_result.get_sphere_pos(idx, t)
+            else { continue };
+            draw_circle(pos.x, pos.y, sphere.radius, WHITE);
+        }
+
+        root_ui().label(None, &format!("time: {t:.02}s/{sim_duration:.02}s"));
 
         next_frame().await;
     }
