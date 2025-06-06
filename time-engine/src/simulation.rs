@@ -1,7 +1,9 @@
-use crate::{ circle_polygon, clip_shapes_on_portal, default, WorldState };
+use std::time::Instant;
+
+use crate::{ circle_polygon, clip_shapes_on_portal, default, i_shape_to_parry_shape, WorldState };
 
 use glam::f32::Vec2;
-use parry2d::shape::Shape;
+use i_overlay::{float::single::SingleFloatOverlay, i_shape::base::data::{Shape, Shapes}};
 use parry2d::{ math as pmath, query, shape::{self, SharedShape} };
 use nalgebra as na;
 use itertools::Itertools;
@@ -134,6 +136,13 @@ impl SimulationResult {
     pub fn new() -> Self {
         default()
     }
+
+    pub fn max_t(&self) -> f32 {
+        self.spheres.iter()
+            .flat_map(|sphere| sphere.snapshots.iter().map(|snap| snap.t))
+            .reduce(f32::max)
+            .unwrap_or(f32::INFINITY)
+    }
 }
 
 pub(crate) struct Simulation<'a> {
@@ -141,7 +150,7 @@ pub(crate) struct Simulation<'a> {
     end_time: f32,
     snapshots: Vec<Vec<SphereSnapshot>>,
     /// Shape of the simulation's walls
-    box_shape: shape::Compound,
+    walls_shapes: Shapes<Vec2>,
 }
 
 impl<'a> Simulation<'a> {
@@ -154,20 +163,11 @@ impl<'a> Simulation<'a> {
             portal_traversals: default()
         }]).collect_vec();
 
-        let axis_x = na::Unit::new_normalize(na::vector![1., 0.]);
-        let axis_y = na::Unit::new_normalize(na::vector![0., 1.]);
-        let box_shape = shape::Compound::new(vec![
-            (pmath::Isometry::translation(0., 0.), SharedShape::new(shape::HalfSpace::new(axis_x))),
-            (pmath::Isometry::translation(0., 0.), SharedShape::new(shape::HalfSpace::new(axis_y))),
-            (pmath::Isometry::translation(state.width, 0.), SharedShape::new(shape::HalfSpace::new(-axis_x))),
-            (pmath::Isometry::translation(0., state.height), SharedShape::new(shape::HalfSpace::new(-axis_y))),
-        ]);
-
         Self {
             world_state: state,
             end_time,
             snapshots,
-            box_shape,
+            walls_shapes: state.get_static_body_collision(),
         }
     }
 
@@ -205,38 +205,25 @@ impl<'a> Simulation<'a> {
         }
     }
 
-    fn get_sphere_shape(&self, idx: usize, t: f32) -> Option<impl Shape> {
+    fn get_sphere_shape(&self, idx: usize, _t: f32) -> Option<impl shape::Shape> {
         let sphere = self.world_state.spheres.get(idx)?;
-        let snap = self.get_sphere_snapshot(idx, t)?;
-
-        // get a shape for the sphere in world space
-        let mut shapes = vec![vec![circle_polygon(snap.pos, sphere.radius, 30)]];
-        for traversal in &snap.portal_traversals {
-            assert!(traversal.end_t > t);
-            let portal = &self.world_state.portals[traversal.portal_in_idx];
-            shapes = clip_shapes_on_portal(shapes, portal, traversal.direction.swap());
-        }
-
-        if shapes.is_empty() {
-            return None;
-        }
-        
-        Some(shape::Compound::new(shapes.into_iter().map(|shape| {
-            // only support one contour per shape
-            assert!(shape.len() == 1);
-            let contour = &shape[0];
-
-            (pmath::Isometry::identity(), SharedShape::new(shape::ConvexPolygon::from_convex_polyline(
-                contour.iter().copied()
-                    // Put the shape back in sphere's local-space
-                    .map(|p| p - snap.pos)
-                    .map(|p| na::vector![p.x, p.y].into())
-                    .collect()
-            ).expect("Is valid")))
-        }).collect()))
+        Some(shape::Ball::new(sphere.radius))
     }
 
-    fn get_portal_shape(&self, idx: usize, _t: f32) -> impl Shape {
+    /// Clips the reverse side of any portal the given sphere is currently traversing from
+    /// the given shapes
+    fn clip_shape_for_sphere_collisions(&self, sphere_idx: usize, t: f32, mut shapes: Shapes<Vec2>) -> Shapes<Vec2> {
+        let snap = self.get_sphere_snapshot(sphere_idx, t).unwrap();
+
+        for traversal in snap.portal_traversals {
+            let portal = &self.world_state.portals[traversal.portal_in_idx];
+            shapes = clip_shapes_on_portal(shapes, portal, traversal.direction);
+        }
+
+        shapes
+    }
+
+    fn get_portal_shape(&self, idx: usize, _t: f32) -> impl shape::Shape {
         let portal = &self.world_state.portals[idx];
         let h2 = portal.height / 2.;
         shape::Polyline::new(vec![
@@ -251,10 +238,13 @@ impl<'a> Simulation<'a> {
     fn get_next_sphere_wall_collision(&self, idx: usize, t: f32) -> Option<SphereSnapshot> {
         let snap = self.get_sphere_snapshot(idx, t)?;
         let sphere_shape = self.get_sphere_shape(idx, t)?;
+
+        let wall_shapes = self.clip_shape_for_sphere_collisions(idx, t, self.walls_shapes.clone());
+        let wall_collision = i_shape_to_parry_shape(wall_shapes);
         
         // Compute collision from time `t`
         let result = query::cast_shapes(
-            &default(), &default(), &self.box_shape,
+            &default(), &default(), &wall_collision,
 
             &pmath::Isometry::translation(snap.pos.x, snap.pos.y),
             &na::vector![snap.vel.x, snap.vel.y], &sphere_shape,
@@ -267,11 +257,11 @@ impl<'a> Simulation<'a> {
         ).expect("Compound on ball should be supported")?;
 
         let impact_t = result.time_of_impact + t;
-        let impact_normal = Vec2::new(result.normal1.x, result.normal1.y);
-        let impact_signs = -(impact_normal.abs() * 2. - 1.);
+        let impact_normal = Vec2::new(result.normal1.x, result.normal1.y).normalize();
+        let new_vel = snap.vel - 2. * impact_normal * snap.vel.dot(impact_normal);
 
         Some(SphereSnapshot {
-            vel: snap.vel * impact_signs,
+            vel: new_vel,
             ..snap.extrapolate_to(impact_t)
         })
     }
@@ -443,6 +433,7 @@ impl<'a> Simulation<'a> {
         let mut iterations = 0;
         // Used to detect when the same collision is detected multiple times
         let mut stagnation = 0;
+        let start_instant = Instant::now();
         while current_time < self.end_time && iterations < MAX_ITERATIONS {
             // println!("\n{iterations}");
             iterations += 1;
@@ -510,12 +501,20 @@ impl<'a> Simulation<'a> {
             }
         }
         assert!(iterations < MAX_ITERATIONS, "Max iterations reached ({MAX_ITERATIONS}) (time is {current_time}/{})", self.end_time);
-        println!("FINISHED in {iterations} iterations");
+        println!("FINISHED in {iterations} iterations (took {:?})", start_instant.elapsed());
+
+        // If there was an abrupt simulation stop we must no simulate up to end_time
+        let stop_time = if stagnation >= MAX_STAGNATION {
+            current_time
+        } else {
+            self.end_time
+        };
 
         SimulationResult {
             spheres: self.snapshots.iter().enumerate().map(|(idx, snaps)| {
                 let sphere = &self.world_state.spheres[idx];
-                let sphere_end = self.end_time.min(sphere.initial_time + sphere.max_age);
+                let sphere_end = stop_time
+                    .min(sphere.initial_time + sphere.max_age);
                 let mut out = snaps.iter().copied()
                     .map_into::<SphereSnapshot>()
                     .collect_vec();

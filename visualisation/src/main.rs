@@ -2,7 +2,7 @@ mod draw_polygon;
 mod timeline_controls;
 use timeline_controls::TimelineControls;
 mod simulation_renderer;
-use simulation_renderer::render_simulation;
+use simulation_renderer::{render_simulation, RenderSimulationArgs};
 
 use time_engine as te;
 use macroquad::{ prelude::*, ui::{ self, root_ui } };
@@ -18,7 +18,6 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let sim_duration = 60f32;
     let sim = {
         let mut sim = te::WorldState::new(100., 100.);
         sim.push_portal(te::Portal {
@@ -43,22 +42,23 @@ async fn main() {
             radius: 3.,
             ..Default::default()
         });
-        // sim.push_sphere(te::Sphere {
-        //     initial_pos: glam::Vec2::new(20., 6.),
-        //     initial_velocity: glam::Vec2::new(30., 20.),
-        //     radius: 3.,
-        //     ..Default::default()
-        // });
-        // sim.push_sphere(te::Sphere {
-        //     initial_pos: glam::Vec2::new(20., 20.),
-        //     initial_velocity: glam::Vec2::new(10., 10.),
-        //     radius: 3.,
-        //     ..Default::default()
-        // });
+        sim.push_sphere(te::Sphere {
+            initial_pos: glam::Vec2::new(20., 6.),
+            initial_velocity: glam::Vec2::new(30., 20.),
+            radius: 3.,
+            ..Default::default()
+        });
+        sim.push_sphere(te::Sphere {
+            initial_pos: glam::Vec2::new(20., 20.),
+            initial_velocity: glam::Vec2::new(10., 10.),
+            radius: 3.,
+            ..Default::default()
+        });
         sim
     };
     println!("Simulating...");
-    let simulation_result = sim.simulate(sim_duration);
+    let simulation_result = sim.simulate(60f32);
+    let sim_duration = simulation_result.max_t();
     println!("Finished simulation");
 
     let mut cam_offset = Vec2::ZERO;
@@ -66,6 +66,7 @@ async fn main() {
     let mut paused = true;
     let mut sim_t = 0.;
     let mut sim_speed = 1.;
+    let mut enable_debug_rendering = false;
     
     let mut timeline_controls = TimelineControls::new();
 
@@ -120,6 +121,10 @@ async fn main() {
             paused = !paused;
         }
 
+        if is_key_pressed(KeyCode::D) {
+            enable_debug_rendering = !enable_debug_rendering;
+        }
+
         camera.target = cam_offset + cam_centering_offset;
         camera.zoom = cam_centering_zoom * zoom;
 
@@ -153,7 +158,12 @@ async fn main() {
         set_camera(&camera);
 
         // Render simulation
-        render_simulation(&sim, &simulation_result, sim_t);
+        render_simulation(RenderSimulationArgs {
+            world_state: &sim,
+            simulation_result: &simulation_result,
+            sim_t,
+            enable_debug_rendering,
+        });
 
         root_ui().label(None, &format!("fps: {}", get_fps()));
         root_ui().label(None, &format!("time: {sim_t:.02}s/{sim_duration:.02}s"));

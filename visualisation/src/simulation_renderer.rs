@@ -3,10 +3,20 @@ use i_overlay::{i_shape::base::data::Shapes, mesh::{outline::offset::OutlineOffs
 use time_engine as te;
 use crate::draw_polygon::draw_shapes;
 
+pub struct RenderSimulationArgs<'a> {
+    pub world_state: &'a te::WorldState,
+    pub simulation_result: &'a te::SimulationResult,
+    pub sim_t: f32,
+    pub enable_debug_rendering: bool,
+}
+
 pub fn render_simulation(
-    world_state: &te::WorldState,
-    simulation_result: &te::SimulationResult,
-    sim_t: f32,
+    RenderSimulationArgs {
+        world_state,
+        simulation_result,
+        sim_t,
+        enable_debug_rendering,
+    }: RenderSimulationArgs<'_>
 ) {
     // Clear background
     clear_background(BLACK);
@@ -37,7 +47,8 @@ pub fn render_simulation(
             sphere_shapes = te::clip_shapes_on_portal(sphere_shapes, portal_ou, traversal.direction.swap());
         }
 
-        if !snap.portal_traversals.is_empty() {
+        // Renders an outline on the sphere showing its portal traversal state
+        if enable_debug_rendering && !snap.portal_traversals.is_empty() {
             let outline = sphere_shapes.outline(&OutlineStyle {
                 outer_offset: 0.5,
                 inner_offset: 0.5,
@@ -72,8 +83,17 @@ pub fn render_simulation(
         let middle = portal.initial_transform.transform_point2(Vec2::new(0., 0.));
         let start = portal.initial_transform.transform_point2(Vec2::new(0., -h2));
         let end = portal.initial_transform.transform_point2(Vec2::new(0., h2));
-        let normal = portal.initial_transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
-        draw_line(middle.x, middle.y, middle.x + normal.x, middle.y + normal.y, 0.5, GREEN.with_alpha(0.25));
+        if enable_debug_rendering {
+            let normal = portal.initial_transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
+            // draw the normal arrow
+            draw_line(middle.x, middle.y, middle.x + normal.x, middle.y + normal.y, 0.5, GREEN.with_alpha(0.25));
+        }
+        // draw the actual portal surface
         draw_line(start.x, start.y, end.x, end.y, 1., GREEN);
+    }
+
+    // Draw the world's static body collision
+    if enable_debug_rendering {
+        draw_shapes(Vec2::ZERO, &world_state.get_static_body_collision(), ORANGE);
     }
 }

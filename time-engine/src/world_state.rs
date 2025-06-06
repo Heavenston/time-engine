@@ -1,6 +1,10 @@
 use crate::{ default, Simulation, SimulationResult };
 
 use glam::f32::{ Vec2, Affine2 };
+use i_overlay::i_shape::base::data::Shapes;
+
+const PORTALS_WALLS_WIDTH: f32 = 0.1;
+const PORTALS_WALLS_HEIGHT: f32 = 0.5;
 
 pub struct Sphere {
     pub initial_time: f32,
@@ -72,5 +76,46 @@ impl WorldState {
 
     pub fn simulate(&self, end_time: f32) -> SimulationResult {
         Simulation::new(self, end_time).run()
+    }
+
+    pub fn get_static_body_collision(&self) -> Shapes<Vec2> {
+        // Vector used to add width to the walls
+        let wall_width_splat = Vec2::splat(3.);
+        let wall_width_angle = wall_width_splat * Vec2::new(-1., 1.);
+        let mut shapes: Shapes<Vec2> = vec![
+            vec![
+                vec![
+                    Vec2::new(0., 0.) - wall_width_splat,
+                    Vec2::new(0., self.height) + wall_width_angle,
+                    Vec2::new(self.width, self.height) + wall_width_splat,
+                    Vec2::new(self.width, 0.) - wall_width_angle,
+                ],
+                vec![
+                    Vec2::new(0., 0.),
+                    Vec2::new(self.width, 0.),
+                    Vec2::new(self.width, self.height),
+                    Vec2::new(0., self.height),
+                ],
+            ]
+        ];
+
+        for portal in &self.portals {
+            let inv = portal.initial_transform;
+            let h2 = portal.height / 2.;
+            shapes.push(vec![vec![
+                inv.transform_point2(Vec2::new(PORTALS_WALLS_HEIGHT, -h2)),
+                inv.transform_point2(Vec2::new(-PORTALS_WALLS_HEIGHT, -h2)),
+                inv.transform_point2(Vec2::new(-PORTALS_WALLS_HEIGHT, -h2 - PORTALS_WALLS_WIDTH)),
+                inv.transform_point2(Vec2::new(PORTALS_WALLS_HEIGHT, -h2 - PORTALS_WALLS_WIDTH)),
+            ]]);
+            shapes.push(vec![vec![
+                inv.transform_point2(Vec2::new(-PORTALS_WALLS_HEIGHT, h2)),
+                inv.transform_point2(Vec2::new(PORTALS_WALLS_HEIGHT, h2)),
+                inv.transform_point2(Vec2::new(PORTALS_WALLS_HEIGHT, h2 + PORTALS_WALLS_WIDTH)),
+                inv.transform_point2(Vec2::new(-PORTALS_WALLS_HEIGHT, h2 + PORTALS_WALLS_WIDTH)),
+            ]]);
+        }
+
+        shapes
     }
 }

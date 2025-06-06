@@ -1,5 +1,9 @@
 use glam::Vec2;
-use i_overlay::{core::{fill_rule::FillRule, overlay_rule::OverlayRule}, float::single::SingleFloatOverlay, i_shape::base::data::Shapes};
+use i_overlay::{core::{fill_rule::FillRule, overlay_rule::OverlayRule}, float::single::SingleFloatOverlay, i_shape::base::data::{Shape, Shapes}};
+use i_triangle::float::triangulatable::Triangulatable;
+use itertools::Itertools;
+use parry2d::shape;
+use nalgebra as na;
 
 use crate::{Portal, PortalDirection};
 
@@ -42,4 +46,22 @@ pub fn clip_shapes_on_portal(
     ];
 
     shapes.overlay(&clip_polygon, OverlayRule::Difference, FillRule::EvenOdd)
+}
+
+pub fn i_shape_to_parry_shape(shapes: Shapes<Vec2>) -> impl shape::Shape {
+    // Probably very ineficient to tringulate the mesh instead of
+    // using something like convex hull but this is way easier and i know
+    // it will work
+    let triangulation = shapes.triangulate()
+        .to_triangulation::<u32>();
+
+    shape::TriMesh::new(
+        triangulation.points.into_iter()
+            .map(|point| na::point![point.x, point.y])
+            .collect(),
+        triangulation.indices.into_iter()
+            .tuples::<(_, _, _)>()
+            .map(|(a, b, c)| [a, b, c])
+            .collect(),
+    ).unwrap()
 }
