@@ -1,5 +1,7 @@
 mod draw_polygon;
 use draw_polygon::*;
+mod timeline_controls;
+use timeline_controls::TimelineControls;
 
 use i_overlay::{i_shape::base::data::Shapes, mesh::{outline::offset::OutlineOffset, style::OutlineStyle}};
 use time_engine as te;
@@ -64,6 +66,9 @@ async fn main() {
     let mut paused = true;
     let mut sim_t = 0.;
     let mut sim_speed = 1.;
+    
+    // Timeline controls
+    let mut timeline_controls = TimelineControls::new();
 
     let mouse_pos = |camera: &Camera2D| {
         camera.screen_to_world(Vec2::new(mouse_position().0, mouse_position().1))
@@ -109,7 +114,6 @@ async fn main() {
         if is_key_pressed(KeyCode::R) {
             cam_offset = Vec2::ZERO;
             zoom = 1.;
-
             sim_t = 0.;
         }
 
@@ -120,23 +124,28 @@ async fn main() {
         camera.target = cam_offset + cam_centering_offset;
         camera.zoom = cam_centering_zoom * zoom;
 
-        if is_mouse_button_down(MouseButton::Left) {
+        // Handle timeline input
+        let mouse_in_timeline = timeline_controls.handle_input(&mut sim_t, sim_duration, &mut paused, &mut sim_speed);
+
+        if !mouse_in_timeline && is_mouse_button_down(MouseButton::Left) {
             cam_offset += mouse_delta_position() / camera.zoom;
         }
 
         camera.target = cam_offset + cam_centering_offset;
 
-        let scroll = mouse_wheel().1;
-        if scroll != 0. {
-            let mouse_world_before = mouse_pos(&camera);
-            
-            zoom *= CAMERA_ZOOM_SPEED.powf(scroll);
-            
-            camera.zoom = cam_centering_zoom * zoom;
-            
-            let mouse_world_after = mouse_pos(&camera);
-            cam_offset += mouse_world_before - mouse_world_after;
-            camera.target = cam_offset + cam_centering_offset;
+        if !mouse_in_timeline {
+            let scroll = mouse_wheel().1;
+            if scroll != 0. {
+                let mouse_world_before = mouse_pos(&camera);
+                
+                zoom *= CAMERA_ZOOM_SPEED.powf(scroll);
+                
+                camera.zoom = cam_centering_zoom * zoom;
+                
+                let mouse_world_after = mouse_pos(&camera);
+                cam_offset += mouse_world_before - mouse_world_after;
+                camera.target = cam_offset + cam_centering_offset;
+            }
         }
 
         camera.zoom = cam_centering_zoom * zoom;
@@ -216,23 +225,9 @@ async fn main() {
             root_ui().label(None, "PAUSED");
         }
 
-        root_ui().label(None, &format!("speed: {sim_speed:.02}x"));
-        root_ui().same_line(0.);
-        if root_ui().button(None, "1x") {
-            sim_speed = 1.;
-        }
-        root_ui().same_line(0.);
-        if root_ui().button(None, "0.5x") {
-            sim_speed = 0.5;
-        }
-        root_ui().same_line(0.);
-        if root_ui().button(Vec2::new(5., 0.), "Faster") {
-            sim_speed *= 1.5;
-        }
-        root_ui().same_line(0.);
-        if root_ui().button(None, "Slower") {
-            sim_speed /= 1.5;
-        }
+        // Draw timeline controls
+        set_default_camera();
+        timeline_controls.draw(sim_t, sim_duration, paused, sim_speed);
 
         next_frame().await;
     }
