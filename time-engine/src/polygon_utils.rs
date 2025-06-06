@@ -7,6 +7,11 @@ use nalgebra as na;
 
 use crate::{Portal, PortalDirection};
 
+/// Size of the polygon created for clipping behind a portal
+/// should aproximate a half space so be pretty big, but not too much as to
+/// not endure precision penalty
+const PORTAL_CLIPPING_EXTENT: Vec2 = Vec2::new(100., 100.);
+
 pub fn circle_polygon(
     center: Vec2,
     radius: f32,
@@ -29,11 +34,11 @@ pub fn clip_shapes_on_portal(
     portal: &Portal,
     direction: PortalDirection,
 ) -> Shapes<Vec2> {
-    let h2 = portal.height / 2.;
+    let h2 = PORTAL_CLIPPING_EXTENT.y / 2.;
     let start = portal.initial_transform.transform_point2(Vec2::new(0., -h2));
     let end = portal.initial_transform.transform_point2(Vec2::new(0., h2));
 
-    let normal = portal.initial_transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
+    let normal = portal.initial_transform.transform_vector2(Vec2::new(-1., 0.)) * PORTAL_CLIPPING_EXTENT.x;
     let normal = match direction {
         PortalDirection::Front => normal,
         PortalDirection::Back => -normal,

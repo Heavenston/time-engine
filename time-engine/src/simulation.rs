@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::{ circle_polygon, clip_shapes_on_portal, default, i_shape_to_parry_shape, WorldState };
+use crate::{ circle_polygon, clip_shapes_on_portal, default, i_shape_to_parry_shape, Portal, Sphere, WorldState };
 
 use glam::f32::Vec2;
 use i_overlay::{float::single::SingleFloatOverlay, i_shape::base::data::{Shape, Shapes}};
@@ -53,6 +53,22 @@ impl SpherePortalTraversal {
             end_t: self.end_t,
         }
     }
+
+    // pub fn end_t(&self, snap: &SphereSnapshot) -> f32 {
+    //     let inv_portal_trans = self.portal_in.initial_transform.inverse();
+    //     let rel_vel = inv_portal_trans.transform_vector2(snap.vel);
+    //     let rel_pos = inv_portal_trans.transform_point2(snap.pos);
+
+    //     // Finding when the sphere wont intersect with the portal anymore
+    //     // nothing in parry2d can help so we hardcode a sphere-line solution
+    //     let exit_dt = {
+    //         let t0 = (sphere.radius - rel_pos.x) / rel_vel.x;
+    //         let t1 = (-sphere.radius - rel_pos.x) / rel_vel.x;
+
+    //         // Not sure on the math of alaways taking the max but anyway
+    //         t0.max(t1)
+    //     };
+    // }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -84,6 +100,25 @@ impl SphereSnapshot {
     pub fn extrapolate_to(&self, t: f32) -> Self {
         assert!(t >= self.t);
         self.extrapolate_after(t - self.t)
+    }
+
+    // FIXME: Function assumption: Adding portal traversal has no side effect on the other
+    // traversals the sphere already has
+    pub fn with_portal_traversal(mut self, traversal: SpherePortalTraversal) -> Self {
+        // asserts we arn't already traversing this portal which would be a contradiction
+        debug_assert!(!self.portal_traversals.iter()
+            .flat_map(|t| [t.portal_in_idx, t.portal_out_idx])
+            .any(|t2| t2 == traversal.portal_in_idx || t2 == traversal.portal_out_idx));
+
+        self.portal_traversals.push(traversal);
+        self
+    }
+
+    pub fn with_vel(self, new_vel: Vec2) -> Self {
+        Self {
+            vel: new_vel,
+            ..self
+        }
     }
 }
 
@@ -119,7 +154,7 @@ impl SimulatedSphere {
             t,
             pos: before.pos.lerp(after.pos, lerp_fact),
             age: before.age + ((after.age - before.age) * lerp_fact),
-            vel: before.vel + ((after.vel - before.vel) * lerp_fact),
+            vel: before.vel,
             portal_traversals: before.portal_traversals.iter().copied()
                 .filter(|traversal| traversal.end_t >= t)
                 .collect(),
@@ -260,10 +295,7 @@ impl<'a> Simulation<'a> {
         let impact_normal = Vec2::new(result.normal1.x, result.normal1.y).normalize();
         let new_vel = snap.vel - 2. * impact_normal * snap.vel.dot(impact_normal);
 
-        Some(SphereSnapshot {
-            vel: new_vel,
-            ..snap.extrapolate_to(impact_t)
-        })
+        Some(snap.extrapolate_to(impact_t).with_vel(new_vel))
     }
 
     #[must_use]
@@ -291,15 +323,11 @@ impl<'a> Simulation<'a> {
 
         let impact_t = result.time_of_impact + t;
 
+        // Completely elastic collision with two sphere of the same weight
+        // simplified as just a swap of velocities
         Some((
-            SphereSnapshot {
-                vel: snap2.vel,
-                ..snap1.extrapolate_to(impact_t)
-            },
-            SphereSnapshot {
-                vel: snap1.vel,
-                ..snap2.extrapolate_to(impact_t)
-            },
+            snap1.extrapolate_to(impact_t).with_vel(snap2.vel),
+            snap2.extrapolate_to(impact_t).with_vel(snap1.vel),
         ))
     }
 
@@ -361,18 +389,12 @@ impl<'a> Simulation<'a> {
         // println!("{snap:?}");
         // println!("ball {sphere_idx} touches p{portal_idx} on {direction:?} ({t}s) at {impact_t}s exists at {}s (dt {exit_dt}s)", impact_t + exit_dt);
 
-        let mut portal_traversals = impact_snap.portal_traversals;
-        portal_traversals.push(SpherePortalTraversal {
+        Some(impact_snap.with_portal_traversal(SpherePortalTraversal {
             portal_in_idx: portal_idx,
             portal_out_idx: portal.link_to,
             direction,
             end_t: impact_t + exit_dt,
-        });
-
-        Some(SphereSnapshot {
-            portal_traversals,
-            ..impact_snap
-        })
+        }))
     }
 
     fn get_next_sphere_portal_traversals_end(&self, sphere_idx: usize, portal_idx: usize, t: f32) -> Option<[SphereSnapshot; 2]> {

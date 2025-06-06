@@ -26,6 +26,7 @@ impl Default for Sphere {
     }
 }
 
+#[derive(Default, Debug, Clone, Copy)]
 pub struct Portal {
     pub height: f32,
     pub initial_transform: Affine2,
