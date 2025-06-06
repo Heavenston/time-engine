@@ -120,6 +120,7 @@ impl SphereSnapshot {
     // traversals the sphere already has
     pub fn with_portal_traversal(mut self, traversal: SpherePortalTraversal) -> Self {
         // asserts we arn't already traversing this portal which would be a contradiction
+        // FIXME: This can technically happen but how to handle it ?
         debug_assert!(!self.portal_traversals.iter()
             .flat_map(|t| [t.portal_in_idx, t.portal_out_idx])
             .any(|t2| t2 == traversal.portal_in_idx || t2 == traversal.portal_out_idx));
@@ -134,7 +135,7 @@ impl SphereSnapshot {
         let sphere = &world_state.spheres[sphere_idx];
 
         // Temporarily take the traversals to not have to borrow self mutably
-        let mut traversals = self.portal_traversals.clone();
+        let mut traversals = self.portal_traversals;
         for traversal in &mut traversals {
             let portal = &world_state.portals[traversal.portal_in_idx];
             traversal.end_t = SpherePortalTraversal::compute_end_t(sphere, portal, &self);

@@ -23,22 +23,22 @@ async fn main() {
         sim.push_portal(te::Portal {
             height: 20.,
             initial_transform: Affine2::from_angle_translation(
-                std::f32::consts::FRAC_PI_2,
-                Vec2::new(50., 98.),
+                std::f32::consts::PI,
+                Vec2::new(30., 50.),
             ),
             link_to: 1,
         });
         sim.push_portal(te::Portal {
             height: 20.,
             initial_transform: Affine2::from_angle_translation(
-                std::f32::consts::PI,
+                std::f32::consts::PI / 3.,
                 Vec2::new(70., 50.),
             ),
             link_to: 0,
         });
         sim.push_sphere(te::Sphere {
             initial_pos: glam::Vec2::new(50., 50.),
-            initial_velocity: glam::Vec2::new(0., 30.),
+            initial_velocity: glam::Vec2::new(15., 30.),
             radius: 3.,
             ..Default::default()
         });
@@ -57,7 +57,7 @@ async fn main() {
         sim
     };
     println!("Simulating...");
-    let simulation_result = sim.simulate(60f32);
+    let simulation_result = sim.simulate(240f32);
     let sim_duration = simulation_result.max_t();
     println!("Finished simulation");
 
