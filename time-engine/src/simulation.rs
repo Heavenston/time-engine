@@ -54,6 +54,20 @@ impl SpherePortalTraversal {
         }
     }
 
+    /// Finding when a sphere wont intersect with the portal anymore
+    /// nothing in parry2d can help so we hardcode a sphere-line solution
+    fn compute_end_t(sphere: &Sphere, portal: &Portal, snap: &SphereSnapshot) -> f32 {
+        let inv_portal_trans = portal.initial_transform.inverse();
+        let rel_vel = inv_portal_trans.transform_vector2(snap.vel);
+        let rel_pos = inv_portal_trans.transform_point2(snap.pos);
+
+        let t0 = (sphere.radius - rel_pos.x) / rel_vel.x;
+        let t1 = (-sphere.radius - rel_pos.x) / rel_vel.x;
+
+        // Not sure on the math of alaways taking the max but anyway it seems to work
+        t0.max(t1) + snap.t
+    }
+
     // pub fn end_t(&self, snap: &SphereSnapshot) -> f32 {
     //     let inv_portal_trans = self.portal_in.initial_transform.inverse();
     //     let rel_vel = inv_portal_trans.transform_vector2(snap.vel);
@@ -114,11 +128,20 @@ impl SphereSnapshot {
         self
     }
 
-    pub fn with_vel(self, new_vel: Vec2) -> Self {
-        Self {
-            vel: new_vel,
-            ..self
+    /// Changing the velocity requires re-computing the end_t of all portal traversals
+    pub fn with_vel(mut self, new_vel: Vec2, sphere_idx: usize, world_state: &WorldState) -> Self {
+        self.vel = new_vel;
+        let sphere = &world_state.spheres[sphere_idx];
+
+        // Temporarily take the traversals to not have to borrow self mutably
+        let mut traversals = self.portal_traversals.clone();
+        for traversal in &mut traversals {
+            let portal = &world_state.portals[traversal.portal_in_idx];
+            traversal.end_t = SpherePortalTraversal::compute_end_t(sphere, portal, &self);
         }
+        self.portal_traversals = traversals;
+
+        self
     }
 }
 
@@ -295,7 +318,7 @@ impl<'a> Simulation<'a> {
         let impact_normal = Vec2::new(result.normal1.x, result.normal1.y).normalize();
         let new_vel = snap.vel - 2. * impact_normal * snap.vel.dot(impact_normal);
 
-        Some(snap.extrapolate_to(impact_t).with_vel(new_vel))
+        Some(snap.extrapolate_to(impact_t).with_vel(new_vel, idx, self.world_state))
     }
 
     #[must_use]
@@ -326,8 +349,8 @@ impl<'a> Simulation<'a> {
         // Completely elastic collision with two sphere of the same weight
         // simplified as just a swap of velocities
         Some((
-            snap1.extrapolate_to(impact_t).with_vel(snap2.vel),
-            snap2.extrapolate_to(impact_t).with_vel(snap1.vel),
+            snap1.extrapolate_to(impact_t).with_vel(snap2.vel, idx1, self.world_state),
+            snap2.extrapolate_to(impact_t).with_vel(snap1.vel, idx2, self.world_state),
         ))
     }
 
@@ -370,30 +393,13 @@ impl<'a> Simulation<'a> {
 
         let impact_t = result.time_of_impact + t;
         let impact_snap = snap.extrapolate_to(impact_t);
-
-        let inv_portal_trans = portal.initial_transform.inverse();
-        let rel_vel = inv_portal_trans.transform_vector2(impact_snap.vel);
-        let rel_pos = inv_portal_trans.transform_point2(impact_snap.pos);
-
-        // Finding when the sphere wont intersect with the portal anymore
-        // nothing in parry2d can help so we hardcode a sphere-line solution
-        let exit_dt = {
-            let t0 = (sphere.radius - rel_pos.x) / rel_vel.x;
-            let t1 = (- sphere.radius - rel_pos.x) / rel_vel.x;
-
-            // Not sure on the math of alaways taking the max but anyway
-            t0.max(t1)
-        };
-
-        let direction = if rel_pos.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
-        // println!("{snap:?}");
-        // println!("ball {sphere_idx} touches p{portal_idx} on {direction:?} ({t}s) at {impact_t}s exists at {}s (dt {exit_dt}s)", impact_t + exit_dt);
+        let direction = if result.normal1.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
 
         Some(impact_snap.with_portal_traversal(SpherePortalTraversal {
             portal_in_idx: portal_idx,
             portal_out_idx: portal.link_to,
             direction,
-            end_t: impact_t + exit_dt,
+            end_t: SpherePortalTraversal::compute_end_t(sphere, portal, &impact_snap),
         }))
     }
 
@@ -434,10 +440,6 @@ impl<'a> Simulation<'a> {
             vel: out_portal.initial_transform.transform_vector2(inv_portal_trans.transform_vector2(impact_snap.vel)),
             ..impact_snap
         };
-
-        // println!("{snap:?}");
-        // println!("ball {sphere_idx} teleport from p{portal_idx} to p{out_portal_idx} ({t}s) at {impact_t}s (dt {impact_dt}s)");
-        // println!("{impact_snap:?}\n{after_impact_snap:?}");
 
         Some([impact_snap, after_impact_snap])
     }
@@ -497,11 +499,6 @@ impl<'a> Simulation<'a> {
             if next_collision_datas.is_empty() {
                 break;
             }
-
-            // debug_assert!(
-            //     next_collision_datas.iter().map(|(sphere_idx, _)| sphere_idx)
-            //     .all_unique()
-            // );
 
             if let Some((_, col_snapshot)) = next_collision_datas.first() {
                 debug_assert!(current_time <= col_snapshot.t);
