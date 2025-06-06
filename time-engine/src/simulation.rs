@@ -1,10 +1,10 @@
 use std::time::Instant;
 
-use crate::{ circle_polygon, clip_shapes_on_portal, default, i_shape_to_parry_shape, Portal, Sphere, WorldState };
+use crate::{ clip_shapes_on_portal, default, i_shape_to_parry_shape, Portal, Sphere, WorldState };
 
 use glam::f32::Vec2;
-use i_overlay::{float::single::SingleFloatOverlay, i_shape::base::data::{Shape, Shapes}};
-use parry2d::{ math as pmath, query, shape::{self, SharedShape} };
+use i_overlay::i_shape::base::data::Shapes;
+use parry2d::{ math as pmath, query, shape };
 use nalgebra as na;
 use itertools::Itertools;
 use tinyvec::ArrayVec;
