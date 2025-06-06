@@ -1,12 +1,11 @@
 use crate::{ circle_polygon, clip_shapes_on_portal, default, WorldState };
 
 use glam::f32::Vec2;
-use parry2d::query::RayCast;
 use parry2d::shape::Shape;
 use parry2d::{ math as pmath, query, shape::{self, SharedShape} };
 use nalgebra as na;
 use itertools::Itertools;
-use tinyvec::{array_vec, ArrayVec};
+use tinyvec::ArrayVec;
 
 const MAX_ITERATIONS: usize = 1_000;
 const MAX_STAGNATION: usize = 100;
