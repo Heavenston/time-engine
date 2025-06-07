@@ -30,6 +30,7 @@ pub struct Portal {
     pub initial_transform: Affine2,
     /// Index of the portal this portals links to
     pub link_to: usize,
+    pub time_offset: f32,
 }
 
 pub struct WorldState {

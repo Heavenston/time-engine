@@ -24,41 +24,44 @@ async fn main() {
             height: 20.,
             initial_transform: Affine2::from_angle_translation(
                 std::f32::consts::PI,
-                Vec2::new(30., 50.),
+                Vec2::new(85., 50.),
             ),
             link_to: 1,
+            time_offset: 1.,
         });
         sim.push_portal(te::Portal {
             height: 20.,
             initial_transform: Affine2::from_angle_translation(
-                std::f32::consts::PI / 3.,
-                Vec2::new(70., 50.),
+                std::f32::consts::FRAC_PI_2,
+                Vec2::new(50., 85.),
             ),
             link_to: 0,
+            time_offset: 0.,
         });
         sim.push_sphere(te::Sphere {
             initial_pos: glam::Vec2::new(50., 50.),
-            initial_velocity: glam::Vec2::new(15., 30.),
+            initial_velocity: glam::Vec2::new(0., 30.),
             radius: 3.,
             ..Default::default()
         });
-        sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(20., 6.),
-            initial_velocity: glam::Vec2::new(30., 20.),
-            radius: 3.,
-            ..Default::default()
-        });
-        sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(20., 20.),
-            initial_velocity: glam::Vec2::new(10., 10.),
-            radius: 3.,
-            ..Default::default()
-        });
+        // sim.push_sphere(te::Sphere {
+        //     initial_pos: glam::Vec2::new(20., 6.),
+        //     initial_velocity: glam::Vec2::new(30., 20.),
+        //     radius: 3.,
+        //     ..Default::default()
+        // });
+        // sim.push_sphere(te::Sphere {
+        //     initial_pos: glam::Vec2::new(20., 20.),
+        //     initial_velocity: glam::Vec2::new(10., 10.),
+        //     radius: 3.,
+        //     ..Default::default()
+        // });
         sim
     };
     println!("Simulating...");
-    let simulation_result = sim.simulate(240f32);
+    let simulation_result = sim.simulate(30f32);
     let sim_duration = simulation_result.max_t();
+    println!("{simulation_result:#?}");
     println!("Finished simulation");
 
     let mut cam_offset = Vec2::ZERO;
