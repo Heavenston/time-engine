@@ -1,7 +1,8 @@
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
 
-use crate::{ clip_shapes_on_portal, default, i_shape_to_parry_shape, Portal, Sphere, WorldState };
+use crate::{ clip_shapes_on_portal, default, i_shape_to_parry_shape, Portal, TimelineId, TimelineMultiverse, WorldState };
 
+use ordered_float::OrderedFloat as OF;
 use glam::f32::Vec2;
 use i_overlay::i_shape::base::data::Shapes;
 use parry2d::{ math as pmath, query, shape };
@@ -56,13 +57,13 @@ impl SpherePortalTraversal {
 
     /// Finding when a sphere wont intersect with the portal anymore
     /// nothing in parry2d can help so we hardcode a sphere-line solution
-    fn compute_end_t(sphere: &Sphere, portal: &Portal, snap: &SphereSnapshot) -> f32 {
+    fn compute_end_t(sphere_radius: f32, portal: &Portal, snap: &SphereSnapshot) -> f32 {
         let inv_portal_trans = portal.initial_transform.inverse();
         let rel_vel = inv_portal_trans.transform_vector2(snap.vel);
         let rel_pos = inv_portal_trans.transform_point2(snap.pos);
 
-        let t0 = (sphere.radius - rel_pos.x) / rel_vel.x;
-        let t1 = (-sphere.radius - rel_pos.x) / rel_vel.x;
+        let t0 = (sphere_radius - rel_pos.x) / rel_vel.x;
+        let t1 = (-sphere_radius - rel_pos.x) / rel_vel.x;
 
         // Not sure on the math of alaways taking the max but anyway it seems to work
         t0.max(t1) + snap.t
@@ -88,6 +89,7 @@ impl SpherePortalTraversal {
 #[derive(Debug, Clone, Copy)]
 pub struct SphereSnapshot {
     pub t: f32,
+    pub tid: TimelineId,
     pub pos: Vec2,
     pub age: f32,
     pub vel: Vec2,
@@ -102,6 +104,7 @@ impl SphereSnapshot {
         let t = self.t + dt;
         Self {
             t,
+            tid: self.tid,
             pos: self.pos + self.vel * dt,
             vel: self.vel,
             age: self.age + dt,
@@ -130,15 +133,14 @@ impl SphereSnapshot {
     }
 
     /// Changing the velocity requires re-computing the end_t of all portal traversals
-    pub fn with_vel(mut self, new_vel: Vec2, sphere_idx: usize, world_state: &WorldState) -> Self {
+    pub fn with_vel(mut self, new_vel: Vec2, sphere_radius: f32, world_state: &WorldState) -> Self {
         self.vel = new_vel;
-        let sphere = &world_state.spheres[sphere_idx];
 
         // Temporarily take the traversals to not have to borrow self mutably
         let mut traversals = self.portal_traversals;
         for traversal in &mut traversals {
             let portal = &world_state.portals[traversal.portal_in_idx];
-            traversal.end_t = SpherePortalTraversal::compute_end_t(sphere, portal, &self);
+            traversal.end_t = SpherePortalTraversal::compute_end_t(sphere_radius, portal, &self);
         }
         self.portal_traversals = traversals;
 
@@ -176,6 +178,7 @@ impl SimulatedSphere {
 
         Some(SphereSnapshot {
             t,
+            tid: before.tid,
             pos: before.pos.lerp(after.pos, lerp_fact),
             age: before.age + ((after.age - before.age) * lerp_fact),
             vel: before.vel,
@@ -206,73 +209,70 @@ impl SimulationResult {
 
 pub(crate) struct Simulation<'a> {
     world_state: &'a WorldState,
+    multiverse: TimelineMultiverse,
     end_time: f32,
-    snapshots: Vec<Vec<SphereSnapshot>>,
+    spheres: Vec<SimulatedSphere>,
     /// Shape of the simulation's walls
     walls_shapes: Shapes<Vec2>,
 }
 
 impl<'a> Simulation<'a> {
     pub fn new(state: &'a WorldState, end_time: f32) -> Self {
-        let snapshots = state.spheres.iter().map(|sphere| vec![SphereSnapshot {
-            t: sphere.initial_time,
-            pos: sphere.initial_pos,
-            vel: sphere.initial_velocity,
-            age: 0.,
-            portal_traversals: default()
-        }]).collect_vec();
-
+        let multiverse = TimelineMultiverse::new();
         Self {
+            spheres: state.start_spheres.iter().map(|sphere| SimulatedSphere {
+                radius: sphere.radius,
+                snapshots: vec![SphereSnapshot {
+                    t: sphere.initial_time,
+                    tid: multiverse.root(),
+                    pos: sphere.initial_pos,
+                    vel: sphere.initial_velocity,
+                    age: 0.,
+                    portal_traversals: default()
+                }]
+            }).collect_vec(),
+
             world_state: state,
+            multiverse,
             end_time,
-            snapshots,
             walls_shapes: state.get_static_body_collision(),
         }
     }
 
-    /// Get the latest snapshot of a sphere checking that the sphere exists at this
-    /// point in time.
-    /// If Some is returned, asserts that this is the last snapshot, so pushing
-    /// into the snapshot vec adds it just after the returned one.
-    fn get_last_sphere_snapshot(&self, idx: usize, t: f32) -> Option<&SphereSnapshot> {
-        let snaps = &self.snapshots.get(idx)?;
+    /// Get the earliest snapshot for the given sphere at the given time and timeline.
+    fn get_last_sphere_snapshot(&self, idx: usize, t: f32, tid: TimelineId) -> Option<&SphereSnapshot> {
+        let snaps = &self.spheres.get(idx)?.snapshots;
 
-        debug_assert!(snaps.iter().map(|snap| snap.t).is_sorted());
-        let last_snap = snaps.last().expect("All spheres must have at least one snapshot");
+        debug_assert!(
+            snaps.iter()
+                .filter(|snap| self.multiverse.is_parent(snap.tid, tid))
+                .map(|snap| snap.t)
+                .is_sorted()
+        );
 
-        if last_snap.t <= t { Some(last_snap) }
-        else {
-            // If the last snapshot is in the future we must 
-            debug_assert!(snaps.len() == 1);
-            None
-        }
+        snaps.iter().rev()
+            .filter(|snap| self.multiverse.is_parent(snap.tid, tid))
+            .find(|snap| snap.t <= t)
     }
 
     /// Get an extrapolated snapshot of the given sphere up to t
-    /// Returns None if the sphere has expired or has not yet appeared
-    fn get_sphere_snapshot(&self, idx: usize, t: f32) -> Option<SphereSnapshot> {
-        let sphere = self.world_state.spheres.get(idx)?;
-
-        if sphere.initial_time + sphere.max_age < t {
-            None
-        }
-        else {
-            // If not snapshot is available before t, this means the sphere does not exist
-            // at this time
-            let last_snap = self.get_last_sphere_snapshot(idx, t)?;
-            Some(last_snap.extrapolate_to(t))
-        }
+    /// Returns None if the sphere has not yet appeared
+    fn get_sphere_snapshot(&self, idx: usize, t: f32, tid: TimelineId) -> Option<SphereSnapshot> {
+        // If not snapshot is available before t, this means the sphere does not exist
+        // at this time
+        let last_snap = self.get_last_sphere_snapshot(idx, t, tid)?;
+        Some(last_snap.extrapolate_to(t))
     }
 
-    fn get_sphere_shape(&self, idx: usize, _t: f32) -> Option<impl shape::Shape> {
-        let sphere = self.world_state.spheres.get(idx)?;
+    fn get_sphere_collision_shape(&self, idx: usize, _t: f32, _tid: TimelineId) -> Option<impl shape::Shape> {
+        let sphere = self.spheres.get(idx)?;
         Some(shape::Ball::new(sphere.radius))
     }
 
     /// Clips the reverse side of any portal the given sphere is currently traversing from
     /// the given shapes
-    fn clip_shape_for_sphere_collisions(&self, sphere_idx: usize, t: f32, mut shapes: Shapes<Vec2>) -> Shapes<Vec2> {
-        let snap = self.get_sphere_snapshot(sphere_idx, t).unwrap();
+    fn clip_shape_for_sphere_collisions(&self, sphere_idx: usize, t: f32, tid: TimelineId, mut shapes: Shapes<Vec2>) -> Shapes<Vec2> {
+        let snap = self.get_sphere_snapshot(sphere_idx, t, tid).unwrap();
 
         for traversal in snap.portal_traversals {
             let portal = &self.world_state.portals[traversal.portal_in_idx];
@@ -294,11 +294,12 @@ impl<'a> Simulation<'a> {
     /// Computes when the given sphere will collision with the walls of the
     /// simulation, giving a snapshot of its position if any collision is found
     #[must_use]
-    fn get_next_sphere_wall_collision(&self, idx: usize, t: f32) -> Option<SphereSnapshot> {
-        let snap = self.get_sphere_snapshot(idx, t)?;
-        let sphere_shape = self.get_sphere_shape(idx, t)?;
+    fn get_next_sphere_wall_collision(&self, idx: usize, t: f32, tid: TimelineId) -> Option<SphereSnapshot> {
+        let snap = self.get_sphere_snapshot(idx, t, tid)?;
+        let sphere = self.spheres.get(idx)?;
+        let sphere_shape = self.get_sphere_collision_shape(idx, t, tid)?;
 
-        let wall_shapes = self.clip_shape_for_sphere_collisions(idx, t, self.walls_shapes.clone());
+        let wall_shapes = self.clip_shape_for_sphere_collisions(idx, t, tid, self.walls_shapes.clone());
         let wall_collision = i_shape_to_parry_shape(wall_shapes);
         
         // Compute collision from time `t`
@@ -319,16 +320,19 @@ impl<'a> Simulation<'a> {
         let impact_normal = Vec2::new(result.normal1.x, result.normal1.y).normalize();
         let new_vel = snap.vel - 2. * impact_normal * snap.vel.dot(impact_normal);
 
-        Some(snap.extrapolate_to(impact_t).with_vel(new_vel, idx, self.world_state))
+        Some(snap.extrapolate_to(impact_t).with_vel(new_vel, sphere.radius, self.world_state))
     }
 
     #[must_use]
-    fn get_next_sphere_sphere_collision(&self, idx1: usize, idx2: usize, t: f32) -> Option<(SphereSnapshot, SphereSnapshot)> {
-        let snap1 = self.get_sphere_snapshot(idx1, t)?;
-        let snap2 = self.get_sphere_snapshot(idx2, t)?;
+    fn get_next_sphere_sphere_collision(&self, idx1: usize, idx2: usize, t: f32, tid: TimelineId) -> Option<(SphereSnapshot, SphereSnapshot)> {
+        let snap1 = self.get_sphere_snapshot(idx1, t, tid)?;
+        let snap2 = self.get_sphere_snapshot(idx2, t, tid)?;
         
-        let sphere_shape1 = self.get_sphere_shape(idx1, t)?;
-        let sphere_shape2 = self.get_sphere_shape(idx2, t)?;
+        let sphere1 = self.spheres.get(idx1)?;
+        let sphere2 = self.spheres.get(idx2)?;
+
+        let sphere_shape1 = self.get_sphere_collision_shape(idx1, t, tid)?;
+        let sphere_shape2 = self.get_sphere_collision_shape(idx2, t, tid)?;
 
         // Compute collision from time `t`
         let result = query::cast_shapes(
@@ -350,18 +354,18 @@ impl<'a> Simulation<'a> {
         // Completely elastic collision with two sphere of the same weight
         // simplified as just a swap of velocities
         Some((
-            snap1.extrapolate_to(impact_t).with_vel(snap2.vel, idx1, self.world_state),
-            snap2.extrapolate_to(impact_t).with_vel(snap1.vel, idx2, self.world_state),
+            snap1.extrapolate_to(impact_t).with_vel(snap2.vel, sphere1.radius, self.world_state),
+            snap2.extrapolate_to(impact_t).with_vel(snap1.vel, sphere2.radius, self.world_state),
         ))
     }
 
-    fn get_next_sphere_portal_traversals_start(&self, sphere_idx: usize, portal_idx: usize, t: f32) -> Option<SphereSnapshot> {
-        let snap = self.get_sphere_snapshot(sphere_idx, t)?;
+    fn get_next_sphere_portal_traversals_start(&self, sphere_idx: usize, portal_idx: usize, t: f32, tid: TimelineId) -> Option<SphereSnapshot> {
+        let snap = self.get_sphere_snapshot(sphere_idx, t, tid)?;
         if snap.portal_traversals.iter().any(|tr| tr.portal_in_idx == portal_idx) {
             return None;
         }
-        let sphere = self.world_state.spheres.get(sphere_idx)?;
-        let sphere_shape = self.get_sphere_shape(sphere_idx, t)?;
+        let sphere = self.spheres.get(sphere_idx)?;
+        let sphere_shape = self.get_sphere_collision_shape(sphere_idx, t, tid)?;
         let portal = &self.world_state.portals[portal_idx];
         let portal_shape = self.get_portal_shape(portal_idx, t);
 
@@ -400,12 +404,12 @@ impl<'a> Simulation<'a> {
             portal_in_idx: portal_idx,
             portal_out_idx: portal.link_to,
             direction,
-            end_t: SpherePortalTraversal::compute_end_t(sphere, portal, &impact_snap),
+            end_t: SpherePortalTraversal::compute_end_t(sphere.radius, portal, &impact_snap),
         }))
     }
 
-    fn get_next_sphere_portal_traversals_end(&self, sphere_idx: usize, portal_idx: usize, t: f32) -> Option<[SphereSnapshot; 2]> {
-        let snap = self.get_sphere_snapshot(sphere_idx, t)?;
+    fn get_next_sphere_portal_traversals_end(&self, sphere_idx: usize, portal_idx: usize, t: f32, tid: TimelineId) -> Option<[SphereSnapshot; 2]> {
+        let snap = self.get_sphere_snapshot(sphere_idx, t, tid)?;
         if !snap.portal_traversals.iter().any(|tr| tr.portal_in_idx == portal_idx) {
             return None;
         }
@@ -449,48 +453,54 @@ impl<'a> Simulation<'a> {
         let state = self.world_state;
 
         // we start the simulation when the first ball starts
-        let start_time = state.spheres.iter().map(|s| s.initial_time)
+        let initial_start_time = self.world_state.start_spheres.iter().map(|s| s.initial_time)
             .reduce(f32::min)
             .unwrap_or(0.);
 
-        let mut current_time = start_time;
+        let mut current_times = HashMap::<TimelineId, f32>::new();
+        current_times.insert(self.multiverse.root(), initial_start_time);
 
         let mut iterations = 0;
         // Used to detect when the same collision is detected multiple times
         let mut stagnation = 0;
         let start_instant = Instant::now();
-        while current_time < self.end_time && iterations < MAX_ITERATIONS {
+        while current_times.values().all(|&t| t < self.end_time) && iterations < MAX_ITERATIONS {
             // println!("\n{iterations}");
             iterations += 1;
 
+            let Some((&tid, t)) = current_times.iter_mut().min_by_key(|(_, t)| OF(**t))
+            else {
+                continue;
+            };
+
             // Find the next collision hapenning
-            let next_collision_datas = (0..state.spheres.len())
+            let next_collision_datas = (0..self.spheres.len())
                 .filter_map(|sphere_idx|
-                    self.get_next_sphere_wall_collision(sphere_idx, current_time)
+                    self.get_next_sphere_wall_collision(sphere_idx, *t, tid)
                         .map(|collision| (sphere_idx, collision))
                 )
                 .chain(
-                    (0..state.spheres.len()).array_combinations::<2>()
+                    (0..self.spheres.len()).array_combinations::<2>()
                     .flat_map(|[idx1, idx2]| {
-                        self.get_next_sphere_sphere_collision(idx1, idx2, current_time)
+                        self.get_next_sphere_sphere_collision(idx1, idx2, *t, tid)
                             .into_iter()
                             .flat_map(move |(a, b)| [(idx1, a), (idx2, b)])
                     })
                 )
                 .chain(
-                    (0..state.spheres.len())
+                    (0..self.spheres.len())
                     .cartesian_product(0..state.portals.len())
                     .flat_map(|(sphere_idx, portal_idx)| {
-                        self.get_next_sphere_portal_traversals_start(sphere_idx, portal_idx, current_time)
+                        self.get_next_sphere_portal_traversals_start(sphere_idx, portal_idx, *t, tid)
                             .into_iter()
                             .map(move |snapshot| (sphere_idx, snapshot))
                     })
                 )
                 .chain(
-                    (0..state.spheres.len())
+                    (0..self.spheres.len())
                     .cartesian_product(0..state.portals.len())
                     .flat_map(|(sphere_idx, portal_idx)| {
-                        self.get_next_sphere_portal_traversals_end(sphere_idx, portal_idx, current_time)
+                        self.get_next_sphere_portal_traversals_end(sphere_idx, portal_idx, *t, tid)
                             .into_iter()
                             .flatten()
                             .map(move |snapshot| (sphere_idx, snapshot))
@@ -502,52 +512,53 @@ impl<'a> Simulation<'a> {
             }
 
             if let Some((_, col_snapshot)) = next_collision_datas.first() {
-                debug_assert!(current_time <= col_snapshot.t);
-                if current_time == col_snapshot.t {
+                debug_assert!(*t <= col_snapshot.t);
+                if *t == col_snapshot.t {
                     stagnation += 1;
                 }
                 else {
                     stagnation = 0;
                 }
                 if stagnation > MAX_STAGNATION {
-                    eprintln!("Stagnation detected on {current_time}s ({next_collision_datas:#?})");
+                    eprintln!("Stagnation detected on {t}s ({next_collision_datas:#?})");
                     break;
                 }
-                current_time = col_snapshot.t;
+                *t = col_snapshot.t;
             }
+
             for (col_sphere_idx, col_snapshot) in next_collision_datas {
-                debug_assert_eq!(current_time, col_snapshot.t);
-                self.snapshots[col_sphere_idx].push(col_snapshot);
+                debug_assert_eq!(*t, col_snapshot.t);
+                debug_assert!(
+                    self.spheres[col_sphere_idx].snapshots.iter().rev()
+                        .find(|snap| self.multiverse.is_parent(snap.tid, tid))
+                        .expect("Always at least one snapshot")
+                        .t <= col_snapshot.t
+                );
+                self.spheres[col_sphere_idx].snapshots.push(col_snapshot);
             }
         }
-        assert!(iterations < MAX_ITERATIONS, "Max iterations reached ({MAX_ITERATIONS}) (time is {current_time}/{})", self.end_time);
+        assert!(iterations < MAX_ITERATIONS, "Max iterations reached ({MAX_ITERATIONS}) {current_times:#?}");
         println!("FINISHED in {iterations} iterations (took {:?})", start_instant.elapsed());
 
         // If there was an abrupt simulation stop we must no simulate up to end_time
         let stop_time = if stagnation >= MAX_STAGNATION {
-            current_time
+            current_times.values().copied().reduce(f32::max).unwrap()
         } else {
             self.end_time
         };
 
-        SimulationResult {
-            spheres: self.snapshots.iter().enumerate().map(|(idx, snaps)| {
-                let sphere = &self.world_state.spheres[idx];
-                let sphere_end = stop_time
-                    .min(sphere.initial_time + sphere.max_age);
-                let mut out = snaps.iter().copied()
-                    .map_into::<SphereSnapshot>()
-                    .collect_vec();
-                // Add a last snapshot at the end of the simulation
-                if let Some(last) = snaps.last() { if last.t < sphere_end {
-                    out.push(last.extrapolate_to(sphere_end));
-                } }
+        for sphere in &mut self.spheres {
+            let mut out = sphere.snapshots.iter().copied()
+                .map_into::<SphereSnapshot>()
+                .collect_vec();
+            // Add a last snapshot at the end of the simulation
+            if let Some(last) = sphere.snapshots.last() { if last.t < stop_time {
+                out.push(last.extrapolate_to(stop_time));
+            } }
+        }
 
-                SimulatedSphere {
-                    radius: sphere.radius,
-                    snapshots: out,
-                }
-            }).collect_vec(),
+        SimulationResult {
+            spheres: self.spheres,
         }
     }
 }
