@@ -27,7 +27,7 @@ async fn main() {
                 Vec2::new(85., 50.),
             ),
             link_to: 1,
-            time_offset: 1.,
+            time_offset: -2.2,
         });
         sim.push_portal(te::Portal {
             height: 20.,
@@ -39,7 +39,7 @@ async fn main() {
             time_offset: 0.,
         });
         sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(50., 50.),
+            initial_pos: glam::Vec2::new(50., 6.),
             initial_velocity: glam::Vec2::new(0., 30.),
             radius: 3.,
             ..Default::default()
