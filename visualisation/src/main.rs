@@ -28,6 +28,10 @@ async fn main() {
             ),
             link_to: 1,
             time_offset: -2.2,
+            // time_offset: -1.,
+            // time_offset: 0.,
+            // time_offset: 0.5,
+            // time_offset: 1.,
         });
         sim.push_portal(te::Portal {
             height: 20.,
@@ -39,27 +43,27 @@ async fn main() {
             time_offset: 0.,
         });
         sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(50., 6.),
+            initial_pos: glam::Vec2::new(50., 10.),
             initial_velocity: glam::Vec2::new(0., 30.),
             radius: 3.,
             ..Default::default()
         });
         // sim.push_sphere(te::Sphere {
         //     initial_pos: glam::Vec2::new(20., 6.),
-        //     initial_velocity: glam::Vec2::new(30., 20.),
+        //     initial_velocity: glam::Vec2::new(30., 30.),
         //     radius: 3.,
         //     ..Default::default()
         // });
         // sim.push_sphere(te::Sphere {
         //     initial_pos: glam::Vec2::new(20., 20.),
-        //     initial_velocity: glam::Vec2::new(10., 10.),
+        //     initial_velocity: glam::Vec2::new(40., -30.),
         //     radius: 3.,
         //     ..Default::default()
         // });
         sim
     };
     println!("Simulating...");
-    let simulation_result = sim.simulate(30f32);
+    let simulation_result = sim.simulate(60f32);
     let sim_duration = simulation_result.max_t();
     println!("{simulation_result:#?}");
     println!("Finished simulation");

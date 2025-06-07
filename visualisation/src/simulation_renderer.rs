@@ -53,8 +53,9 @@ pub fn render_simulation(
         .collect();
 
     // Draw spheres
-    for (tid, sphere) in simulation_result.spheres.iter()
-        .flat_map(|sphere| sphere.tids().map(move |tid| (tid, sphere)))
+    for (tid, sphere_idx, sphere) in simulation_result.spheres.iter()
+        .enumerate()
+        .flat_map(|(sphere_idx, sphere)| sphere.tids().map(move |tid| (tid, sphere_idx, sphere)))
     {
         let Some(snap) = sphere.interpolate_snapshot(&simulation_result.multiverse, sim_t, tid)
         else { continue };
@@ -62,10 +63,6 @@ pub fn render_simulation(
         let mut sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(snap.pos, sphere.radius, 30)]];
         let mut sphere_ghost_shapes: Shapes<Vec2> = vec![];
         for traversal in snap.portal_traversals {
-            if traversal.end_t < sim_t {
-                continue
-            }
-
             let portal_in = &world_state.portals()[traversal.portal_in_idx];
             let portal_ou = &world_state.portals()[traversal.portal_out_idx];
 
@@ -95,8 +92,19 @@ pub fn render_simulation(
             draw_shapes(Vec2::ZERO, &outline, color);
         }
 
-        let color = timeline_colors.get(&tid).copied()
-            .expect("All timelines have a color");
+        if enable_debug_rendering {
+            let color = timeline_colors.get(&tid).copied()
+                .expect("All timelines have a color");
+            let outline = sphere_shapes.outline(&OutlineStyle {
+                outer_offset: 0.5,
+                inner_offset: 0.5,
+                join: i_overlay::mesh::style::LineJoin::Round(1.),
+            });
+            draw_shapes(Vec2::ZERO, &outline, color.with_alpha(0.5));
+        }
+
+        // TEMP?: Better color each individual ball instead of timelines
+        let color = COLORS[sphere_idx % COLORS.len()];
 
         // Drawing the actual sphere
         draw_shapes(Vec2::ZERO, &sphere_shapes, color);
