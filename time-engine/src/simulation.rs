@@ -93,6 +93,7 @@ pub struct SphereSnapshot {
     pub pos: Vec2,
     pub age: f32,
     pub vel: Vec2,
+    pub dead: bool,
     // NOTE: Usage of ArrayVec is mainly for having Copy and not really for
     // performance
     pub portal_traversals: ArrayVec<[SpherePortalTraversal; 4]>,
@@ -101,6 +102,7 @@ pub struct SphereSnapshot {
 impl SphereSnapshot {
     pub fn extrapolate_after(&self, dt: f32) -> Self {
         assert!(dt >= 0.);
+        assert!(!self.dead);
         let t = self.t + dt;
         Self {
             t,
@@ -108,6 +110,7 @@ impl SphereSnapshot {
             pos: self.pos + self.vel * dt,
             vel: self.vel,
             age: self.age + dt,
+            dead: false,
             portal_traversals: self.portal_traversals.iter().copied()
                 .filter(|traversal| traversal.end_t > t)
                 .collect(),
@@ -146,6 +149,11 @@ impl SphereSnapshot {
 
         self
     }
+
+    pub fn dead(mut self) -> Self {
+        self.dead = true;
+        self
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -155,14 +163,19 @@ pub struct SimulatedSphere {
 }
 
 impl SimulatedSphere {
-    pub fn interpolate_snapshot(&self, t: f32) -> Option<SphereSnapshot> {
-        // Find the first snapshot that is after the given time
-        let (after_idx, after) = self.snapshots.iter().enumerate()
-            .find(|(_, snap)| snap.t >= t)?;
+    pub fn tids(&self) -> impl Iterator<Item = TimelineId> {
+        self.snapshots.iter()
+            .map(|snap| snap.tid)
+            .unique()
+    }
 
-        // The first snapshot is after the given time so the sphere is not
-        // spawned yet
-        if after_idx == 0 && after.t > t {
+    pub fn interpolate_snapshot(&self, multiverse: &TimelineMultiverse, t: f32, tid: TimelineId) -> Option<SphereSnapshot> {
+        // Find the first snapshot that is after the given time
+        let after = self.snapshots.iter()
+            .filter(|snap| multiverse.is_parent(snap.tid, tid))
+            .find(|snap| snap.t >= t)?;
+
+        if after.t == t && after.dead {
             return None;
         }
 
@@ -171,7 +184,13 @@ impl SimulatedSphere {
             return Some(*after);
         }
 
-        let before = &self.snapshots[after_idx - 1];
+        let before = &self.snapshots.iter().rev()
+            .filter(|snap| multiverse.is_parent(snap.tid, tid))
+            .find(|snap| snap.t < t)?;
+
+        if before.dead {
+            return None;
+        }
 
         let lerp_fact = (t - before.t) / (after.t - before.t);
         debug_assert!((0. ..=1.).contains(&lerp_fact));
@@ -182,6 +201,7 @@ impl SimulatedSphere {
             pos: before.pos.lerp(after.pos, lerp_fact),
             age: before.age + ((after.age - before.age) * lerp_fact),
             vel: before.vel,
+            dead: false,
             portal_traversals: before.portal_traversals.iter().copied()
                 .filter(|traversal| traversal.end_t >= t)
                 .collect(),
@@ -189,9 +209,10 @@ impl SimulatedSphere {
     }
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Debug)]
 pub struct SimulationResult {
     pub spheres: Vec<SimulatedSphere>,
+    pub multiverse: TimelineMultiverse,
 }
 
 impl SimulationResult {
@@ -228,6 +249,7 @@ impl<'a> Simulation<'a> {
                     pos: sphere.initial_pos,
                     vel: sphere.initial_velocity,
                     age: 0.,
+                    dead: false,
                     portal_traversals: default()
                 }]
             }).collect_vec(),
@@ -559,6 +581,7 @@ impl<'a> Simulation<'a> {
 
         SimulationResult {
             spheres: self.spheres,
+            multiverse: self.multiverse,
         }
     }
 }

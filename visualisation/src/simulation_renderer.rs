@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+
 use macroquad::prelude::*;
 use i_overlay::{i_shape::base::data::Shapes, mesh::{outline::offset::OutlineOffset, style::OutlineStyle}};
 use time_engine as te;
 use crate::draw_polygon::draw_shapes;
+use itertools::Itertools;
+use ordered_float::OrderedFloat as OF;
 
 pub struct RenderSimulationArgs<'a> {
     pub world_state: &'a te::WorldState,
@@ -9,6 +13,20 @@ pub struct RenderSimulationArgs<'a> {
     pub sim_t: f32,
     pub enable_debug_rendering: bool,
 }
+
+const COLORS: [Color; 11] = [
+    WHITE,
+    Color::from_hex(0xFF4500), // Orange Red
+    Color::from_hex(0x00CED1), // Dark Turquoise
+    Color::from_hex(0xFFD700), // Gold
+    Color::from_hex(0x32CD32), // Lime Green
+    Color::from_hex(0x8A2BE2), // Blue Violet
+    Color::from_hex(0xFF69B4), // Hot Pink
+    Color::from_hex(0x00FF7F), // Spring Green
+    Color::from_hex(0x1E90FF), // Dodger Blue
+    Color::from_hex(0xFF6347), // Tomato
+    Color::from_hex(0xFF1493), // Deep Pink
+];
 
 pub fn render_simulation(
     RenderSimulationArgs {
@@ -24,9 +42,21 @@ pub fn render_simulation(
     // Draw the simulation bounding box
     draw_rectangle_lines(-2.5, -2.5, world_state.width() + 5., world_state.height() + 5., 5., WHITE);
 
+    // assigns for each timeline a color
+    let timeline_colors: HashMap<te::TimelineId, Color> = simulation_result.spheres.iter()
+        .flat_map(|sphere| &sphere.snapshots)
+        .sorted_by_key(|snap| OF(snap.t))
+        .map(|snap| snap.tid)
+        .unique()
+        .enumerate()
+        .map(|(idx, tid)| (tid, COLORS[idx % COLORS.len()]))
+        .collect();
+
     // Draw spheres
-    for sphere in &simulation_result.spheres {
-        let Some(snap) = sphere.interpolate_snapshot(sim_t)
+    for (tid, sphere) in simulation_result.spheres.iter()
+        .flat_map(|sphere| sphere.tids().map(move |tid| (tid, sphere)))
+    {
+        let Some(snap) = sphere.interpolate_snapshot(&simulation_result.multiverse, sim_t, tid)
         else { continue };
 
         let mut sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(snap.pos, sphere.radius, 30)]];
@@ -65,8 +95,11 @@ pub fn render_simulation(
             draw_shapes(Vec2::ZERO, &outline, color);
         }
 
+        let color = timeline_colors.get(&tid).copied()
+            .expect("All timelines have a color");
+
         // Drawing the actual sphere
-        draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE);
+        draw_shapes(Vec2::ZERO, &sphere_shapes, color);
 
         if enable_debug_rendering {
             // draw a velocity line

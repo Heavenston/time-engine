@@ -6,5 +6,7 @@ edition = "2024"
 [dependencies]
 i_overlay = { version = "4.0.2", features = ["glam"] }
 i_triangle = { version = "0.35.0", features = ["glam"] }
+itertools = "0.14.0"
 macroquad = "0.4.14"
+ordered-float = "5.0.0"
 time-engine = { version = "0.1.0", path = "../time-engine" }
