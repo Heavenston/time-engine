@@ -14,8 +14,7 @@ pub struct RenderSimulationArgs<'a> {
     pub enable_debug_rendering: bool,
 }
 
-const COLORS: [Color; 11] = [
-    WHITE,
+const TIMELINES_COLORS: [Color; 10] = [
     Color::from_hex(0xFF4500), // Orange Red
     Color::from_hex(0x00CED1), // Dark Turquoise
     Color::from_hex(0xFFD700), // Gold
@@ -26,6 +25,20 @@ const COLORS: [Color; 11] = [
     Color::from_hex(0x1E90FF), // Dodger Blue
     Color::from_hex(0xFF6347), // Tomato
     Color::from_hex(0xFF1493), // Deep Pink
+];
+
+const SPHERES_COLORS: [Color; 11] = [
+    WHITE,
+    Color::from_hex(0xFFB347), // Pastel Orange
+    Color::from_hex(0xAEC6CF), // Pastel Blue
+    Color::from_hex(0xFDFD96), // Pastel Yellow
+    Color::from_hex(0x77DD77), // Pastel Green
+    Color::from_hex(0xB19CD9), // Pastel Violet
+    Color::from_hex(0xFFD1DC), // Pastel Pink
+    Color::from_hex(0xA7F4B4), // Pastel Mint
+    Color::from_hex(0x87CEEB), // Sky Blue
+    Color::from_hex(0xFF9999), // Pastel Red
+    Color::from_hex(0xF4C2C2), // Soft Pink
 ];
 
 pub fn render_simulation(
@@ -49,15 +62,16 @@ pub fn render_simulation(
         .map(|snap| snap.tid)
         .unique()
         .enumerate()
-        .map(|(idx, tid)| (tid, COLORS[idx % COLORS.len()]))
+        .map(|(idx, tid)| (tid, TIMELINES_COLORS[idx % TIMELINES_COLORS.len()]))
         .collect();
 
     // Draw spheres
-    for (tid, sphere_idx, sphere) in simulation_result.spheres.iter()
+    for (sid, tid, sphere_idx, sphere) in simulation_result.spheres.iter()
         .enumerate()
-        .flat_map(|(sphere_idx, sphere)| sphere.tids().map(move |tid| (tid, sphere_idx, sphere)))
+        .flat_map(|(sphere_idx, sphere)| sphere.sids().map(move |sid| (sid, sphere_idx, sphere)))
+        .flat_map(|(sid, sphere_idx, sphere)| sphere.tids(sid).map(move |tid| (sid, tid, sphere_idx, sphere)))
     {
-        let Some(snap) = sphere.interpolate_snapshot(&simulation_result.multiverse, sim_t, tid)
+        let Some(snap) = sphere.interpolate_snapshot(&simulation_result.multiverse, sim_t, sid, tid)
         else { continue };
 
         let mut sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(snap.pos, sphere.radius, 30)]];
@@ -100,11 +114,11 @@ pub fn render_simulation(
                 inner_offset: 0.5,
                 join: i_overlay::mesh::style::LineJoin::Round(1.),
             });
-            draw_shapes(Vec2::ZERO, &outline, color.with_alpha(0.5));
+            draw_shapes(Vec2::ZERO, &outline, color);
         }
 
         // TEMP?: Better color each individual ball instead of timelines
-        let color = COLORS[sphere_idx % COLORS.len()];
+        let color = SPHERES_COLORS[sphere_idx % SPHERES_COLORS.len()];
 
         // Drawing the actual sphere
         draw_shapes(Vec2::ZERO, &sphere_shapes, color);
@@ -114,7 +128,7 @@ pub fn render_simulation(
             draw_line(snap.pos.x, snap.pos.y, snap.pos.x + snap.vel.x, snap.pos.y + snap.vel.y, 0.5, ORANGE.with_alpha(0.25));
 
             // Draw age text on sphere
-            let text = &format!("{:.01}", snap.age);
+            let text = &format!("{sphere_idx}.{sid}");
             let size = 32;
             let scale: f32 = 0.075;
             let text_size = measure_text(text, None, size, scale);
