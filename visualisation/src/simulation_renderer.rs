@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{any::Any, collections::HashMap};
 
 use macroquad::prelude::*;
 use i_overlay::{i_shape::base::data::Shapes, mesh::{outline::offset::OutlineOffset, style::OutlineStyle}};
@@ -67,15 +67,19 @@ pub fn render_simulation(
         .map(|(idx, tid)| (tid, TIMELINES_COLORS[idx % TIMELINES_COLORS.len()]))
         .collect();
 
+    let timelines_to_render = if enable_debug_rendering || selected_timeline.is_none() {
+        timeline_colors.keys().copied().sorted().collect_vec()
+    }
+    else {
+        vec![selected_timeline.unwrap()]
+    };
+
     // Draw spheres
     for (sid, tid, sphere_idx, sphere) in simulation_result.spheres.iter()
         .enumerate()
         .flat_map(|(sphere_idx, sphere)| sphere.sids().map(move |sid| (sid, sphere_idx, sphere)))
-        .flat_map(|(sid, sphere_idx, sphere)| sphere.tids(sid).map(move |tid| (sid, tid, sphere_idx, sphere)))
-        .filter(|(_, tid, _, _)| enable_debug_rendering || selected_timeline.is_none_or(|selected| *tid == selected))
+        .flat_map(|(sid, sphere_idx, sphere)| timelines_to_render.iter().map(move |&tid| (sid, tid, sphere_idx, sphere)))
     {
-        // println!();
-        // println!("sid={sid}, tid={tid}, idx={sphere_idx}");
         let Some(snap) = sphere.get_snapshot(&simulation_result.multiverse, sim_t, sid, tid)
         else { continue };
         if enable_debug_rendering && snap.tid != tid {

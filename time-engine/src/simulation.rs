@@ -1,4 +1,4 @@
-use std::{collections::HashMap, iter::once, time::Instant};
+use std::{collections::HashMap, env::set_current_dir, iter::once, time::Instant};
 
 use crate::{ clip_shapes_on_portal, default, i_shape_to_parry_shape, Portal, StreamId, TimelineId, TimelineMultiverse, WorldState };
 
@@ -422,6 +422,7 @@ impl<'a> Simulation<'a> {
 
     #[must_use]
     fn get_next_sphere_sphere_collision(&self, idx1: usize, sid1: StreamId, idx2: usize, sid2: StreamId, t: f32, tid: TimelineId) -> Option<SimulationCollisionResult> {
+        // println!("{idx1}.{sid1} <-> {idx2}.{sid2} in tid {tid} at {t}");
         let c1 = (idx1, sid1);
         let c2 = (idx2, sid2);
         debug_assert_ne!(c1, c2);
@@ -455,7 +456,7 @@ impl<'a> Simulation<'a> {
 
         let impact_t = result.time_of_impact + t;
 
-        println!("Sphere {idx1}.{sid1} - Sphere {idx2}.{sid2} - {tid:?}");
+        // println!("Found impact at {impact_t}");
 
         let normal = Vec2::new(result.normal1.x, result.normal1.y);
         let (vel1, vel2) = resolve_disk_collision(1., snap1.vel, 1., snap2.vel, normal);
@@ -660,7 +661,7 @@ impl<'a> Simulation<'a> {
             // why do i have to manually drop it i though rust was smart >:(
             drop(spheres_iter);
 
-            println!("{next_collision_datas:#?}");
+            // println!("{next_collision_datas:#?}");
             if next_collision_datas.is_empty() {
                 // If not collision was detected it may be because we are too early
                 // we need to wait for a ball to spawn
@@ -668,7 +669,7 @@ impl<'a> Simulation<'a> {
                 // can only happen when a ball goes from dead to not dead
                 let next_ball_spawn = self.spheres.iter()
                     .flat_map(|s| &s.snapshots)
-                    .filter(|snap| snap.tid == tid)
+                    .filter(|snap| self.multiverse.is_parent(snap.tid, tid))
                     .filter(|snap| snap.t > t)
                     .min_by_key(|snap| OF(snap.t));
                 if let Some(next_ball_spawn) = next_ball_spawn {
@@ -692,6 +693,7 @@ impl<'a> Simulation<'a> {
                 .into_iter()
             {
                 let min_t = snapshots.next().expect("Chunks are not empty").t;
+
                 // Snapshots of a single timeline must be sorted
                 debug_assert!(once(min_t).chain(snapshots.map(|snap| snap.t)).is_sorted());
                 let timeline_t = current_times.get(&tid).copied();
@@ -709,7 +711,7 @@ impl<'a> Simulation<'a> {
                         break 'simulation;
                     }
                 }
-                println!("{tid:?} now at {min_t}");
+                println!("tid {tid} now at {min_t}");
                 current_times.insert(tid, min_t);
             }
             println!("current_times: {current_times:?}");
