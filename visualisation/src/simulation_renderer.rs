@@ -12,6 +12,7 @@ pub struct RenderSimulationArgs<'a> {
     pub simulation_result: &'a te::SimulationResult,
     pub sim_t: f32,
     pub enable_debug_rendering: bool,
+    pub selected_timeline: Option<te::TimelineId>,
 }
 
 const TIMELINES_COLORS: [Color; 10] = [
@@ -47,6 +48,7 @@ pub fn render_simulation(
         simulation_result,
         sim_t,
         enable_debug_rendering,
+        selected_timeline,
     }: RenderSimulationArgs<'_>
 ) {
     // Clear background
@@ -70,9 +72,15 @@ pub fn render_simulation(
         .enumerate()
         .flat_map(|(sphere_idx, sphere)| sphere.sids().map(move |sid| (sid, sphere_idx, sphere)))
         .flat_map(|(sid, sphere_idx, sphere)| sphere.tids(sid).map(move |tid| (sid, tid, sphere_idx, sphere)))
+        .filter(|(_, tid, _, _)| enable_debug_rendering || selected_timeline.is_none_or(|selected| *tid == selected))
     {
-        let Some(snap) = sphere.interpolate_snapshot(&simulation_result.multiverse, sim_t, sid, tid)
+        // println!();
+        // println!("sid={sid}, tid={tid}, idx={sphere_idx}");
+        let Some(snap) = sphere.get_snapshot(&simulation_result.multiverse, sim_t, sid, tid)
         else { continue };
+        if enable_debug_rendering && snap.tid != tid {
+            continue;
+        }
 
         let mut sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(snap.pos, sphere.radius, 30)]];
         let mut sphere_ghost_shapes: Shapes<Vec2> = vec![];
@@ -89,7 +97,8 @@ pub fn render_simulation(
             sphere_ghost_shapes.extend(te::clip_shapes_on_portal(vec![new_ghost_shape], portal_ou, traversal.direction.swap()));
         }
 
-        sphere_shapes.extend(sphere_ghost_shapes);
+        // TEMP: Ghosts when traveling in time are invalid
+        // sphere_shapes.extend(sphere_ghost_shapes);
 
         // Renders an outline on the sphere showing its portal traversal state
         if enable_debug_rendering && !snap.portal_traversals.is_empty() {

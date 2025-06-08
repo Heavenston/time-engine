@@ -12,6 +12,12 @@ impl TimelineId {
     }
 }
 
+impl std::fmt::Display for TimelineId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.idx)
+    }
+}
+
 impl PartialEq for TimelineId {
     fn eq(&self, other: &Self) -> bool {
         self.idx == other.idx

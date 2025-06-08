@@ -205,7 +205,10 @@ impl SphereSnapshot {
     pub fn offset_time(mut self, multiverse: &TimelineMultiverse, dt: f32) -> Self {
         self.t += dt;
         if dt < 0. {
+            print!("{:?} -> ", self.tid);
             self.tid = multiverse.create_children(self.tid, self.t);
+            println!("{:?}", self.tid);
+            println!("{multiverse:#?}");
             self.sid = StreamId::new();
         }
         self
@@ -237,46 +240,50 @@ impl SimulatedSphere {
             .unique()
     }
 
-    pub fn interpolate_snapshot(&self, _multiverse: &TimelineMultiverse, t: f32, sid: StreamId, tid: TimelineId) -> Option<SphereSnapshot> {
-        // Find the first snapshot that is after the given time
-        let after = self.snapshots.iter()
-            .filter(|snap| snap.sid == sid && snap.tid == tid)
-            .find(|snap| snap.t >= t)?;
+    /// Get the earliest snapshot for the given sphere at the given time and timeline.
+    pub fn get_last_snapshot(&self, multiverse: &TimelineMultiverse, t: f32, sid: StreamId, tid: TimelineId) -> Option<&SphereSnapshot> {
+        let snaps = &self.snapshots;
 
-        if after.t == t && after.dead {
+        debug_assert!(
+            snaps.iter()
+                .filter(|snap| snap.sid == sid)
+                .filter(|snap| snap.tid == tid)
+                .map(|snap| snap.age)
+                .is_sorted(),
+        );
+
+        // FIXME: Sort is probably not required if done some other way
+        // NOTE: The assert above is only for a single timeline, we have
+        //       multiple timelines here
+        let sorted = snaps.iter().rev()
+            .filter(|snap| snap.sid == sid)
+            .filter(|snap| multiverse.is_parent(snap.tid, tid))
+            .sorted_by_key(|snap| OF(-snap.age))
+            .collect_vec();
+
+        sorted.iter().copied()
+            .filter(|snap| snap.tid == tid)
+            .find(|snap| snap.t <= t)
+            .or(
+                sorted.iter().copied()
+                    .find(|snap| snap.t <= t)
+            )
+    }
+
+    /// Get an extrapolated snapshot of the given sphere up to t
+    /// Returns None if the sphere has not yet appeared or is dead
+    pub fn get_snapshot(&self, multiverse: &TimelineMultiverse, t: f32, sid: StreamId, tid: TimelineId) -> Option<SphereSnapshot> {
+        if t < tid.start() {
             return None;
         }
 
-        // No interpolation needed in this case
-        if after.t == t {
-            return Some(*after);
-        }
-
-        let before = &self.snapshots.iter().rev()
-            .filter(|snap| snap.sid == sid && snap.tid == tid)
-            .find(|snap| snap.t < t)?;
-
-        if before.dead {
+        // If not snapshot is available before t, this means the sphere does not exist
+        // at this time
+        let last_snap = self.get_last_snapshot(multiverse, t, sid, tid)?;
+        if last_snap.dead {
             return None;
         }
-
-        let lerp_fact = (t - before.t) / (after.t - before.t);
-        debug_assert!((0. ..=1.).contains(&lerp_fact));
-
-        let age = before.age + ((after.age - before.age) * lerp_fact);
-
-        Some(SphereSnapshot {
-            t,
-            tid: before.tid,
-            sid: before.sid,
-            pos: before.pos.lerp(after.pos, lerp_fact),
-            age,
-            vel: before.vel,
-            dead: false,
-            portal_traversals: before.portal_traversals.iter().copied()
-                .filter(|traversal| traversal.end_age > age)
-                .collect(),
-        })
+        Some(last_snap.extrapolate_to(t))
     }
 }
 
@@ -342,54 +349,6 @@ impl<'a> Simulation<'a> {
         }
     }
 
-    /// Get the earliest snapshot for the given sphere at the given time and timeline.
-    fn get_last_sphere_snapshot(&self, idx: usize, t: f32, sid: StreamId, tid: TimelineId) -> Option<&SphereSnapshot> {
-        let snaps = &self.spheres.get(idx)?.snapshots;
-
-        debug_assert!(
-            snaps.iter()
-                .filter(|snap| snap.sid == sid)
-                .filter(|snap| snap.tid == tid)
-                .map(|snap| snap.age)
-                .is_sorted(),
-        );
-
-        // FIXME: Sort is probably not required if done some other way
-        // NOTE: The assert above is only for a single timeline, we have
-        //       multiple timelines here
-        let sorted = snaps.iter().rev()
-            .filter(|snap| snap.sid == sid)
-            .filter(|snap| self.multiverse.is_parent(snap.tid, tid))
-            .sorted_by_key(|snap| OF(-snap.age))
-            .collect_vec();
-
-        let exact_timeline = sorted.iter().copied()
-            .filter(|snap| snap.tid == tid)
-            .find(|snap| snap.t <= t);
-        if exact_timeline.is_some() {
-            return exact_timeline;
-        }
-
-        sorted.iter().copied()
-            .find(|snap| snap.t <= t)
-    }
-
-    /// Get an extrapolated snapshot of the given sphere up to t
-    /// Returns None if the sphere has not yet appeared or is dead
-    fn get_sphere_snapshot(&self, idx: usize, t: f32, sid: StreamId, tid: TimelineId) -> Option<SphereSnapshot> {
-        if t < tid.start() {
-            return None;
-        }
-
-        // If not snapshot is available before t, this means the sphere does not exist
-        // at this time
-        let last_snap = self.get_last_sphere_snapshot(idx, t, sid, tid)?;
-        if last_snap.dead {
-            return None;
-        }
-        Some(last_snap.extrapolate_to(t))
-    }
-
     fn get_sphere_collision_shape(&self, idx: usize) -> Option<impl shape::Shape> {
         let sphere = self.spheres.get(idx)?;
         Some(shape::Ball::new(sphere.radius))
@@ -398,7 +357,8 @@ impl<'a> Simulation<'a> {
     /// Clips the reverse side of any portal the given sphere is currently traversing from
     /// the given shapes
     fn clip_shape_for_sphere_collisions(&self, sphere_idx: usize, t: f32, sid: StreamId, tid: TimelineId, mut shapes: Shapes<Vec2>) -> Shapes<Vec2> {
-        let snap = self.get_sphere_snapshot(sphere_idx, t, sid, tid).unwrap();
+        let snap = self.spheres[sphere_idx].get_snapshot(&self.multiverse, t, sid, tid)
+            .expect("present");
 
         for traversal in snap.portal_traversals {
             let portal = &self.world_state.portals[traversal.portal_in_idx];
@@ -421,11 +381,13 @@ impl<'a> Simulation<'a> {
     /// simulation, giving a snapshot of its position if any collision is found
     #[must_use]
     fn get_next_sphere_wall_collision(&self, idx: usize, t: f32, sid: StreamId, tid: TimelineId) -> Option<SimulationCollisionResult> {
-        let snap = self.get_sphere_snapshot(idx, t, sid, tid)?;
+        let sphere = self.spheres.get(idx)?;
+
+        let snap = sphere.get_snapshot(&self.multiverse, t, sid, tid)?;
         if snap.tid != tid {
             return None;
         }
-        let sphere = self.spheres.get(idx)?;
+
         let sphere_shape = self.get_sphere_collision_shape(idx)?;
 
         let wall_shapes = self.clip_shape_for_sphere_collisions(idx, t, sid, tid, self.walls_shapes.clone());
@@ -463,15 +425,15 @@ impl<'a> Simulation<'a> {
         let c1 = (idx1, sid1);
         let c2 = (idx2, sid2);
         debug_assert_ne!(c1, c2);
-
-        let snap1 = self.get_sphere_snapshot(idx1, t, sid1, tid)?;
-        let snap2 = self.get_sphere_snapshot(idx2, t, sid2, tid)?;
-        if snap1.tid != tid && snap2.tid != tid {
-            return None;
-        }
         
         let sphere1 = self.spheres.get(idx1)?;
         let sphere2 = self.spheres.get(idx2)?;
+
+        let snap1 = sphere1.get_snapshot(&self.multiverse, t, sid1, tid)?;
+        let snap2 = sphere2.get_snapshot(&self.multiverse, t, sid2, tid)?;
+        if snap1.tid != tid && snap2.tid != tid {
+            return None;
+        }
 
         let sphere_shape1 = self.get_sphere_collision_shape(idx1)?;
         let sphere_shape2 = self.get_sphere_collision_shape(idx2)?;
@@ -519,17 +481,18 @@ impl<'a> Simulation<'a> {
     }
 
     fn get_next_sphere_portal_traversals_start(&self, sphere_idx: usize, portal_idx: usize, t: f32, sid: StreamId, tid: TimelineId) -> Option<SimulationCollisionResult> {
-        let snap = self.get_sphere_snapshot(sphere_idx, t, sid, tid)?;
+        let sphere = self.spheres.get(sphere_idx)?;
+        let sphere_shape = self.get_sphere_collision_shape(sphere_idx)?;
+        let portal = &self.world_state.portals[portal_idx];
+        let portal_shape = self.get_portal_shape(portal_idx, t);
+
+        let snap = sphere.get_snapshot(&self.multiverse, t, sid, tid)?;
         if snap.tid != tid {
             return None;
         }
         if snap.portal_traversals.iter().any(|tr| tr.portal_in_idx == portal_idx) {
             return None;
         }
-        let sphere = self.spheres.get(sphere_idx)?;
-        let sphere_shape = self.get_sphere_collision_shape(sphere_idx)?;
-        let portal = &self.world_state.portals[portal_idx];
-        let portal_shape = self.get_portal_shape(portal_idx, t);
 
         // Anoying and imperfect conversion from glam's Isometry to nalgebra's 
         let plane_iso = {
@@ -580,7 +543,8 @@ impl<'a> Simulation<'a> {
     }
 
     fn get_next_sphere_portal_traversals_end(&self, sphere_idx: usize, portal_idx: usize, t: f32, sid: StreamId, tid: TimelineId) -> Option<SimulationCollisionResult> {
-        let snap = self.get_sphere_snapshot(sphere_idx, t, sid, tid)?;
+        let sphere = self.spheres.get(sphere_idx)?;
+        let snap = sphere.get_snapshot(&self.multiverse, t, sid, tid)?;
         if snap.tid != tid {
             return None;
         }

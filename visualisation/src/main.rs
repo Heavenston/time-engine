@@ -1,13 +1,29 @@
 mod draw_polygon;
 mod timeline_controls;
+use itertools::Itertools;
 use timeline_controls::TimelineControls;
 mod simulation_renderer;
 use simulation_renderer::{render_simulation, RenderSimulationArgs};
 
 use time_engine as te;
 use macroquad::{ prelude::*, ui::{ self, root_ui } };
+use std::collections::HashMap;
 
 const CAMERA_ZOOM_SPEED: f32 = 1.25;
+
+fn collect_timeline_ranges(simulation_result: &te::SimulationResult) -> HashMap<te::TimelineId, (f32, f32)> {
+    let mut ranges = HashMap::new();
+    
+    for sphere in &simulation_result.spheres {
+        for snapshot in &sphere.snapshots {
+            let entry = ranges.entry(snapshot.tid).or_insert((f32::INFINITY, f32::NEG_INFINITY));
+            entry.0 = entry.0.min(snapshot.t);
+            entry.1 = entry.1.max(snapshot.t);
+        }
+    }
+    
+    ranges
+}
 
 fn window_conf() -> Conf {
     Conf {
@@ -63,7 +79,7 @@ async fn main() {
         sim
     };
     println!("Simulating...");
-    let simulation_result = sim.simulate(60f32);
+    let simulation_result = sim.simulate(15f32);
     let sim_duration = simulation_result.max_t();
     println!("{simulation_result:#?}");
     println!("Finished simulation");
@@ -74,6 +90,7 @@ async fn main() {
     let mut sim_t = 0.;
     let mut sim_speed = 1.;
     let mut enable_debug_rendering = false;
+    let mut selected_timeline: Option<te::TimelineId> = None;
     
     let mut timeline_controls = TimelineControls::new();
 
@@ -135,8 +152,48 @@ async fn main() {
         camera.target = cam_offset + cam_centering_offset;
         camera.zoom = cam_centering_zoom * zoom;
 
+        // Collect timeline information
+        let timelines = collect_timeline_ranges(&simulation_result);
+        
+        // Check for timelines that are newly active at current time
+        let active_timelines_at_current_time: Vec<_> = timelines.iter()
+            .filter(|(_, (start, end))| *start <= sim_t && sim_t <= *end)
+            .map(|(tid, _)| *tid)
+            .collect();
+        
+        // Find the deepest timeline that just became active (started exactly at current time or very recently)
+        let newly_started_timeline = active_timelines_at_current_time.iter()
+            .filter(|&&tid| {
+                if let Some((start, _)) = timelines.get(&tid) {
+                    // Check if this timeline started within the last frame (to catch newly started timelines)
+                    (*start <= sim_t) && (*start > sim_t - get_frame_time() * sim_speed * 2.0)
+                } else {
+                    false
+                }
+            })
+            .max(); // Uses Ord trait on TimelineId to get the deepest one
+        
+        if let Some(&new_timeline) = newly_started_timeline {
+            // Only auto-switch if the user hasn't manually selected a timeline recently
+            if selected_timeline.is_none_or(|current| new_timeline > current) {
+                selected_timeline = Some(new_timeline);
+                timeline_controls.set_selected_timeline(selected_timeline);
+            }
+        }
+        
         // Handle timeline input
-        let mouse_in_timeline = timeline_controls.handle_input(&mut sim_t, sim_duration, &mut paused, &mut sim_speed);
+        let (mouse_in_timeline, timeline_change) = timeline_controls.handle_input(&mut sim_t, sim_duration, &mut paused, &mut sim_speed, &timelines);
+        
+        // Update selected timeline if user manually changed it
+        if timeline_change.is_some() {
+            selected_timeline = timeline_change;
+        }
+        
+        // If no timeline is selected, default to the deepest one at current time
+        if selected_timeline.is_none() {
+            selected_timeline = timeline_controls.get_deepest_timeline_at_time(sim_t, &timelines);
+            timeline_controls.set_selected_timeline(selected_timeline);
+        }
 
         if !mouse_in_timeline && is_mouse_button_down(MouseButton::Left) {
             cam_offset += mouse_delta_position() / camera.zoom;
@@ -170,6 +227,7 @@ async fn main() {
             simulation_result: &simulation_result,
             sim_t,
             enable_debug_rendering,
+            selected_timeline,
         });
 
         root_ui().label(None, &format!("fps: {}", get_fps()));
@@ -180,7 +238,7 @@ async fn main() {
 
         // Draw timeline controls
         set_default_camera();
-        timeline_controls.draw(sim_t, sim_duration, paused, sim_speed);
+        timeline_controls.draw(sim_t, sim_duration, paused, sim_speed, &timelines);
 
         next_frame().await;
     }
