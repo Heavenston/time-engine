@@ -27,10 +27,19 @@ impl Default for Sphere {
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Portal {
     pub height: f32,
-    pub initial_transform: Affine2,
-    /// Index of the portal this portals links to
-    pub link_to: usize,
+    pub in_transform: Affine2,
+    pub out_transform: Affine2,
     pub time_offset: f32,
+}
+
+impl Portal {
+    pub fn swap(self) -> Self {
+        Self {
+            in_transform: self.out_transform,
+            out_transform: self.in_transform,
+            ..self
+        }
+    }
 }
 
 pub struct WorldState {
@@ -95,20 +104,21 @@ impl WorldState {
             ]
         ];
 
-        for portal in &self.portals {
-            let inv = portal.initial_transform;
-            let h2 = portal.height / 2.;
+        for (height, transform) in self.portals.iter()
+            .flat_map(|portal| [(portal.height, portal.in_transform), (portal.height, portal.out_transform)])
+        {
+            let h2 = height / 2.;
             shapes.push(vec![vec![
-                inv.transform_point2(Vec2::new(PORTALS_WALLS_HEIGHT, -h2)),
-                inv.transform_point2(Vec2::new(-PORTALS_WALLS_HEIGHT, -h2)),
-                inv.transform_point2(Vec2::new(-PORTALS_WALLS_HEIGHT, -h2 - PORTALS_WALLS_WIDTH)),
-                inv.transform_point2(Vec2::new(PORTALS_WALLS_HEIGHT, -h2 - PORTALS_WALLS_WIDTH)),
+                transform.transform_point2(Vec2::new(PORTALS_WALLS_HEIGHT, -h2)),
+                transform.transform_point2(Vec2::new(-PORTALS_WALLS_HEIGHT, -h2)),
+                transform.transform_point2(Vec2::new(-PORTALS_WALLS_HEIGHT, -h2 - PORTALS_WALLS_WIDTH)),
+                transform.transform_point2(Vec2::new(PORTALS_WALLS_HEIGHT, -h2 - PORTALS_WALLS_WIDTH)),
             ]]);
             shapes.push(vec![vec![
-                inv.transform_point2(Vec2::new(-PORTALS_WALLS_HEIGHT, h2)),
-                inv.transform_point2(Vec2::new(PORTALS_WALLS_HEIGHT, h2)),
-                inv.transform_point2(Vec2::new(PORTALS_WALLS_HEIGHT, h2 + PORTALS_WALLS_WIDTH)),
-                inv.transform_point2(Vec2::new(-PORTALS_WALLS_HEIGHT, h2 + PORTALS_WALLS_WIDTH)),
+                transform.transform_point2(Vec2::new(-PORTALS_WALLS_HEIGHT, h2)),
+                transform.transform_point2(Vec2::new(PORTALS_WALLS_HEIGHT, h2)),
+                transform.transform_point2(Vec2::new(PORTALS_WALLS_HEIGHT, h2 + PORTALS_WALLS_WIDTH)),
+                transform.transform_point2(Vec2::new(-PORTALS_WALLS_HEIGHT, h2 + PORTALS_WALLS_WIDTH)),
             ]]);
         }
 

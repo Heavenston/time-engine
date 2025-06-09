@@ -35,14 +35,12 @@ pub fn clip_shapes_on_portal(
     direction: PortalDirection,
 ) -> Shapes<Vec2> {
     let h2 = PORTAL_CLIPPING_EXTENT.y / 2.;
-    let start = portal.initial_transform.transform_point2(Vec2::new(0., -h2));
-    let end = portal.initial_transform.transform_point2(Vec2::new(0., h2));
+    let start = portal.in_transform.transform_point2(Vec2::new(0., -h2));
+    let end = portal.in_transform.transform_point2(Vec2::new(0., h2));
 
-    let normal = portal.initial_transform.transform_vector2(Vec2::new(-1., 0.)) * PORTAL_CLIPPING_EXTENT.x;
-    let normal = match direction {
-        PortalDirection::Front => normal,
-        PortalDirection::Back => -normal,
-    };
+    let normal = portal.in_transform.transform_vector2(Vec2::new(-1., 0.)) * PORTAL_CLIPPING_EXTENT.x;
+    let normal = if direction.is_back() { -normal } else { normal };
+
     let clip_polygon = [
         start,
         end,

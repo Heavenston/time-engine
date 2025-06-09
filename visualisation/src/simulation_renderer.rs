@@ -33,17 +33,18 @@ pub fn render_simulation(
 
     // Draw portals
     for portal in world_state.portals() {
-        let h2 = portal.height / 2.;
-        let middle = portal.initial_transform.transform_point2(Vec2::new(0., 0.));
-        let start = portal.initial_transform.transform_point2(Vec2::new(0., -h2));
-        let end = portal.initial_transform.transform_point2(Vec2::new(0., h2));
-        if enable_debug_rendering {
-            let normal = portal.initial_transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
-            // draw the normal arrow
-            draw_line(middle.x, middle.y, middle.x + normal.x, middle.y + normal.y, 0.5, GREEN.with_alpha(0.25));
-        }
-        // draw the actual portal surface
-        draw_line(start.x, start.y, end.x, end.y, 1., GREEN);
+        // TODO
+        // let h2 = portal.height / 2.;
+        // let middle = portal.initial_transform.transform_point2(Vec2::new(0., 0.));
+        // let start = portal.initial_transform.transform_point2(Vec2::new(0., -h2));
+        // let end = portal.initial_transform.transform_point2(Vec2::new(0., h2));
+        // if enable_debug_rendering {
+        //     let normal = portal.initial_transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
+        //     // draw the normal arrow
+        //     draw_line(middle.x, middle.y, middle.x + normal.x, middle.y + normal.y, 0.5, GREEN.with_alpha(0.25));
+        // }
+        // // draw the actual portal surface
+        // draw_line(start.x, start.y, end.x, end.y, 1., GREEN);
     }
 
     // Draw the world's static body collision
