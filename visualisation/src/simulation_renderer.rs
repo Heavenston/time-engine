@@ -20,7 +20,7 @@ pub fn render_simulation(
     draw_rectangle_lines(-2.5, -2.5, world_state.width() + 5., world_state.height() + 5., 5., WHITE);
 
     // Draw spheres
-    for &te::Sphere { initial_pos: pos, initial_velocity: vel, radius: rad, .. } in world_state.start_spheres().iter() {
+    for &te::Sphere { initial_pos: pos, initial_velocity: vel, radius: rad, .. } in world_state.spheres().iter() {
         let sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
 
         draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE);

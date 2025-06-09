@@ -108,9 +108,7 @@ impl TimelineMultiverse {
 
         while child != parent {
             result += 1;
-            let Some(new_child) = self.try_parent_of(child)
-            else { return None; };
-            child = new_child;
+            child = self.try_parent_of(child)?;
         }
 
         Some(result)

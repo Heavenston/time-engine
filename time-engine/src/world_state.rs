@@ -45,7 +45,7 @@ impl Portal {
 pub struct WorldState {
     pub(crate) width: f32,
     pub(crate) height: f32,
-    pub(crate) start_spheres: Vec<Sphere>,
+    pub(crate) spheres: Vec<Sphere>,
     pub(crate) portals: Vec<Portal>,
 }
 
@@ -54,7 +54,7 @@ impl WorldState {
         Self {
             width,
             height,
-            start_spheres: default(),
+            spheres: default(),
             portals: default(),
         }
     }
@@ -67,8 +67,8 @@ impl WorldState {
         self.height
     }
 
-    pub fn start_spheres(&self) -> &[Sphere] {
-        &self.start_spheres
+    pub fn spheres(&self) -> &[Sphere] {
+        &self.spheres
     }
 
     pub fn portals(&self) -> &[Portal] {
@@ -76,7 +76,7 @@ impl WorldState {
     }
 
     pub fn push_sphere(&mut self, sphere: Sphere) {
-        self.start_spheres.push(sphere);
+        self.spheres.push(sphere);
     }
 
     pub fn push_portal(&mut self, portal: Portal) {
@@ -126,6 +126,6 @@ impl WorldState {
     }
 
     pub fn simulate(&self) -> SimulationResult {
-        Simulation::new(self).run()
+        Simulator::new(self).run()
     }
 }
