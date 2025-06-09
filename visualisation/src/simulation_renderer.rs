@@ -87,22 +87,11 @@ pub fn render_simulation(
         }
 
         let mut sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(snap.pos, sphere.radius, 30)]];
-        let mut sphere_ghost_shapes: Shapes<Vec2> = vec![];
+        // Clip the sphere according to portals it is currently traversing
         for traversal in snap.portal_traversals {
             let portal_in = &world_state.portals()[traversal.portal_in_idx];
-            let portal_ou = &world_state.portals()[traversal.portal_out_idx];
-
-            // Make a new ball mesh at the output portal
-            let in_relative_pos = portal_in.initial_transform.inverse().transform_point2(snap.pos);
-            let out_pos = portal_ou.initial_transform.transform_point2(in_relative_pos);
-            let new_ghost_shape = vec![te::circle_polygon(out_pos, sphere.radius, 30)];
-
             sphere_shapes = te::clip_shapes_on_portal(sphere_shapes, portal_in, traversal.direction);
-            sphere_ghost_shapes.extend(te::clip_shapes_on_portal(vec![new_ghost_shape], portal_ou, traversal.direction.swap()));
         }
-
-        // TEMP: Ghosts when traveling in time are invalid
-        // sphere_shapes.extend(sphere_ghost_shapes);
 
         // Renders an outline on the sphere showing its portal traversal state
         if enable_debug_rendering && !snap.portal_traversals.is_empty() {

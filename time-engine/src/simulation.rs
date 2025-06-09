@@ -77,12 +77,18 @@ pub struct SpherePortalTraversal {
 }
 
 impl SpherePortalTraversal {
-    pub fn swap(self) -> Self {
+    pub fn swap_in_out(self) -> Self {
         Self {
             portal_in_idx: self.portal_out_idx,
             portal_out_idx: self.portal_in_idx,
+            ..self
+        }
+    }
+
+    pub fn swap_direction(self) -> Self {
+        Self {
             direction: self.direction.swap(),
-            end_age: self.end_age,
+            ..self
         }
     }
 
@@ -159,7 +165,8 @@ impl SphereSnapshot {
         else {
             return self;
         };
-        self.portal_traversals[pos] = self.portal_traversals[pos].swap();
+        self.portal_traversals[pos] = self.portal_traversals[pos]
+            .swap_in_out().swap_direction();
         self
     }
 
