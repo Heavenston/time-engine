@@ -64,22 +64,22 @@ async fn main() {
             radius: 3.,
             ..Default::default()
         });
-        sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(20., 6.),
-            initial_velocity: glam::Vec2::new(30., 30.),
-            radius: 3.,
-            ..Default::default()
-        });
-        sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(20., 20.),
-            initial_velocity: glam::Vec2::new(40., -30.),
-            radius: 3.,
-            ..Default::default()
-        });
+        // sim.push_sphere(te::Sphere {
+        //     initial_pos: glam::Vec2::new(20., 6.),
+        //     initial_velocity: glam::Vec2::new(30., 30.),
+        //     radius: 3.,
+        //     ..Default::default()
+        // });
+        // sim.push_sphere(te::Sphere {
+        //     initial_pos: glam::Vec2::new(20., 20.),
+        //     initial_velocity: glam::Vec2::new(40., -30.),
+        //     radius: 3.,
+        //     ..Default::default()
+        // });
         sim
     };
     println!("Simulating...");
-    let simulation_result = sim.simulate(60f32);
+    let simulation_result = sim.simulate(10f32);
     let sim_duration = simulation_result.max_t();
     println!("{simulation_result:#?}");
     println!("Finished simulation");

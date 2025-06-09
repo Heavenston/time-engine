@@ -104,22 +104,6 @@ impl SpherePortalTraversal {
         // Not sure on the math of alaways taking the max but anyway it seems to work
         t0.max(t1) + snap.age
     }
-
-    // pub fn end_t(&self, snap: &SphereSnapshot) -> f32 {
-    //     let inv_portal_trans = self.portal_in.initial_transform.inverse();
-    //     let rel_vel = inv_portal_trans.transform_vector2(snap.vel);
-    //     let rel_pos = inv_portal_trans.transform_point2(snap.pos);
-
-    //     // Finding when the sphere wont intersect with the portal anymore
-    //     // nothing in parry2d can help so we hardcode a sphere-line solution
-    //     let exit_dt = {
-    //         let t0 = (sphere.radius - rel_pos.x) / rel_vel.x;
-    //         let t1 = (-sphere.radius - rel_pos.x) / rel_vel.x;
-
-    //         // Not sure on the math of alaways taking the max but anyway
-    //         t0.max(t1)
-    //     };
-    // }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -247,33 +231,22 @@ impl SimulatedSphere {
             .unique()
     }
 
-    /// Get the earliest snapshot for the given sphere at the given time and timeline.
+    /// Get the latest snapshot for the given sphere at the given time and timeline.
     pub fn get_last_snapshot(&self, multiverse: &TimelineMultiverse, t: f32, sid: StreamId, tid: TimelineId) -> Option<&SphereSnapshot> {
         let snaps = &self.snapshots;
 
-        debug_assert!(
-            snaps.iter()
-                .filter(|snap| snap.sid == sid)
-                .filter(|snap| snap.tid == tid)
-                .map(|snap| snap.age)
-                .is_sorted(),
-        );
-
-        // FIXME: Sort is probably not required if done some other way
-        // NOTE: The assert above is only for a single timeline, we have
-        //       multiple timelines here
-        let sorted = snaps.iter().rev()
+        let parents = snaps.iter().rev()
             .filter(|snap| snap.sid == sid)
             .filter(|snap| multiverse.is_parent(snap.tid, tid))
-            .sorted_by_key(|snap| OF(-snap.age))
-            .collect_vec();
+            .filter(|snap| snap.t <= t)
+        ;
 
-        sorted.iter().copied()
+        parents.clone()
             .filter(|snap| snap.tid == tid)
-            .find(|snap| snap.t <= t)
-            .or(
-                sorted.iter().copied()
-                    .find(|snap| snap.t <= t)
+            .max_by_key(|snap| OF(snap.t))
+            .or_else(||
+                parents.clone()
+                    .max_by_key(|snap| OF(snap.t))
             )
     }
 
@@ -292,6 +265,17 @@ impl SimulatedSphere {
         }
         Some(last_snap.extrapolate_to(t))
     }
+
+    pub fn push_snapshot(&mut self, multiverse: &TimelineMultiverse, snap: SphereSnapshot) {
+        let latest = self.get_last_snapshot(multiverse, f32::INFINITY, snap.sid, snap.tid);
+        // check that there is no snapshots in the future of this timeline already
+        debug_assert!(
+            latest.is_none_or(|s| s.tid != snap.tid || s.t <= snap.t),
+            "{} in tid {} adding {}s but there is {}s",
+            snap.sid, snap.tid, snap.t, latest.map(|s| s.t).unwrap_or_default()
+        );
+        self.snapshots.push(snap);
+    }
 }
 
 #[derive(Default, Debug)]
@@ -307,7 +291,8 @@ impl SimulationResult {
 
     pub fn max_t(&self) -> f32 {
         self.spheres.iter()
-            .flat_map(|sphere| sphere.snapshots.iter().map(|snap| snap.t))
+            .flat_map(|sphere| &sphere.snapshots)
+            .map(|snap| snap.t)
             .reduce(f32::max)
             .unwrap_or(f32::INFINITY)
     }
@@ -728,16 +713,7 @@ impl<'a> Simulation<'a> {
                     current_times.get(&tid).copied(),
                 );
                 for (idx, snap) in new_snapshots {
-                    let snaps = &mut self.spheres[idx].snapshots;
-                    // Asserts that the new snapshot does not break sorting 
-                    debug_assert!(
-                        snaps.iter().filter(|s| s.sid == snap.sid && s.tid == snap.tid).all(|s| s.t <= snap.t),
-                        "{idx}.{} - {:?} + {:?}",
-                        snap.sid,
-                        snaps.iter().filter(|s| s.sid == snap.sid && s.tid == snap.tid).map(|snap| snap.t).collect_vec(),
-                        snap.t
-                    );
-                    snaps.push(snap);
+                    self.spheres[idx].push_snapshot(&self.multiverse, snap);
                 }
             }
         }
