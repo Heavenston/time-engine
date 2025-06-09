@@ -1,4 +1,4 @@
-use crate::default;
+use crate::*;
 
 use glam::f32::{ Vec2, Affine2 };
 use i_overlay::i_shape::base::data::Shapes;
@@ -123,5 +123,9 @@ impl WorldState {
         }
 
         shapes
+    }
+
+    pub fn simulate(&self) -> SimulationResult {
+        Simulation::new(self).run()
     }
 }
