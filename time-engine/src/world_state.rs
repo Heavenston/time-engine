@@ -1,4 +1,4 @@
-use crate::{ default, Simulation, SimulationResult };
+use crate::default;
 
 use glam::f32::{ Vec2, Affine2 };
 use i_overlay::i_shape::base::data::Shapes;
@@ -72,10 +72,6 @@ impl WorldState {
 
     pub fn push_portal(&mut self, portal: Portal) {
         self.portals.push(portal);
-    }
-
-    pub fn simulate(&self, end_time: f32) -> SimulationResult {
-        Simulation::new(self, end_time).run()
     }
 
     pub fn get_static_body_collision(&self) -> Shapes<Vec2> {

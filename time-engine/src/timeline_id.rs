@@ -96,20 +96,32 @@ impl TimelineMultiverse {
         TimelineId { idx: parents.len(), start }
     }
 
-    /// Returns true if parent is a parent or is equal to child
-    pub fn is_parent(&self, parent: TimelineId, mut child: TimelineId) -> bool {
+    /// Return how many generations separate the child from the parent
+    /// negative if the first agument as actually a child of the second one
+    /// Returns None if the two timelines aren't related
+    pub fn distance(&self, parent: TimelineId, mut child: TimelineId) -> Option<i32> {
+        if parent > child {
+            return self.distance(child, parent).map(|v| -v);
+        }
+
+        let mut result = 0;
+
         while child != parent {
+            result += 1;
             let Some(new_child) = self.try_parent_of(child)
-            else {
-                return false;
-            };
+            else { return None; };
             child = new_child;
         }
 
-        child == parent
+        Some(result)
+    }
+
+    /// Returns true if parent is a parent or is equal to child
+    pub fn is_parent(&self, parent: TimelineId, child: TimelineId) -> bool {
+        self.distance(parent, child).is_some_and(|v| v >= 0)
     }
 
     pub fn is_related(&self, lhs: TimelineId, rhs: TimelineId) -> bool {
-        self.is_parent(lhs, rhs) || self.is_parent(rhs, lhs)
+        self.distance(lhs, rhs).is_some()
     }
 }
