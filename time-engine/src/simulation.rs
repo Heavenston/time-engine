@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env::set_current_dir, iter::once, time::Instant};
+use std::{collections::HashMap, iter::once, time::Instant};
 
 use crate::{ clip_shapes_on_portal, default, i_shape_to_parry_shape, Portal, StreamId, TimelineId, TimelineMultiverse, WorldState };
 
@@ -13,30 +13,40 @@ use tinyvec::ArrayVec;
 const MAX_ITERATIONS: usize = 1_000;
 const MAX_STAGNATION: usize = 50;
 
+// FIXME: AI generated \o/
 fn resolve_disk_collision(
-    m1: f32,
-    v1: Vec2,
-    m2: f32,
-    v2: Vec2,
-    normal: Vec2,
+    mass1: f32,
+    velocity1: Vec2,
+    mass2: f32,
+    velocity2: Vec2,
+    collision_normal: Vec2,
 ) -> (Vec2, Vec2) {
-    // Project velocities onto the collision normal
-    let v1n = v1.dot(normal);
-    let v2n = v2.dot(normal);
-
-    // Tangential components remain unchanged
-    let v1t = v1 - normal * v1n;
-    let v2t = v2 - normal * v2n;
-
-    // 1D elastic collision equations for normal components
-    let v1n_after = (v1n * (m1 - m2) + 2.0 * m2 * v2n) / (m1 + m2);
-    let v2n_after = (v2n * (m2 - m1) + 2.0 * m1 * v1n) / (m1 + m2);
-
-    // Combine new normal and unchanged tangential components
-    let new_v1 = v1t + normal * v1n_after;
-    let new_v2 = v2t + normal * v2n_after;
-
-    (new_v1, new_v2)
+    // Ensure the collision normal is normalized
+    let normal = collision_normal.normalize();
+    
+    // Calculate relative velocity
+    let relative_velocity = velocity1 - velocity2;
+    
+    // Calculate relative velocity along the collision normal
+    let velocity_along_normal = relative_velocity.dot(normal);
+    
+    // Don't resolve if velocities are separating
+    if velocity_along_normal > 0.0 {
+        return (velocity1, velocity2);
+    }
+    
+    // Calculate the collision impulse magnitude
+    let total_mass = mass1 + mass2;
+    let impulse_magnitude = 2.0 * velocity_along_normal / total_mass;
+    
+    // Calculate impulse vector
+    let impulse = impulse_magnitude * normal;
+    
+    // Calculate new velocities
+    let velocity1_new = velocity1 - (mass2 * impulse);
+    let velocity2_new = velocity2 + (mass1 * impulse);
+    
+    (velocity1_new, velocity2_new)
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,10 +215,7 @@ impl SphereSnapshot {
     pub fn offset_time(mut self, multiverse: &TimelineMultiverse, dt: f32) -> Self {
         self.t += dt;
         if dt < 0. {
-            print!("{:?} -> ", self.tid);
             self.tid = multiverse.create_children(self.tid, self.t);
-            println!("{:?}", self.tid);
-            println!("{multiverse:#?}");
             self.sid = StreamId::new();
         }
         self
@@ -458,7 +465,7 @@ impl<'a> Simulation<'a> {
 
         // println!("Found impact at {impact_t}");
 
-        let normal = Vec2::new(result.normal1.x, result.normal1.y);
+        let normal = (snap1.pos - snap2.pos).normalize();
         let (vel1, vel2) = resolve_disk_collision(1., snap1.vel, 1., snap2.vel, normal);
 
         Some(SimulationCollisionResult {
@@ -533,7 +540,6 @@ impl<'a> Simulation<'a> {
             end_age: SpherePortalTraversal::compute_end_age(sphere.radius, portal, &impact_snap),
         });
 
-        println!("start");
         Some(SimulationCollisionResult {
             kind: "sphere-portal-start",
             at_t: impact_t,
@@ -581,7 +587,6 @@ impl<'a> Simulation<'a> {
             .with_swaped_traversal(portal_idx)
             .offset_time(&self.multiverse, time_travel_dt);
 
-        println!("end");
         Some(SimulationCollisionResult {
             kind: "sphere-portal-end",
             at_t: impact_t,
@@ -625,6 +630,16 @@ impl<'a> Simulation<'a> {
                     .any(|tid_| self.multiverse.is_parent(tid_, tid)))
             ;
 
+            // When playing a new timeline, events from the parent timeline
+            // may change the child timeline so we must consider any future
+            // snapshot as collisions events too
+            let future_event_t = self.spheres.iter()
+                .flat_map(|s| &s.snapshots)
+                .filter(|snap| self.multiverse.is_parent(snap.tid, tid))
+                .filter(|snap| snap.t > t)
+                .min_by_key(|snap| OF(snap.t))
+                .map(|snap| snap.t);
+
             // Find the next collision hapenning
             let next_collision_datas = std::iter::empty()
                 .chain(
@@ -656,6 +671,7 @@ impl<'a> Simulation<'a> {
                             .into_iter()
                     })
                 )
+                .filter(|data| future_event_t.is_none_or(|t| data.at_t <= t))
                 .min_set_by_key(|val| OF(val.at_t));
 
             // why do i have to manually drop it i though rust was smart >:(
@@ -663,23 +679,13 @@ impl<'a> Simulation<'a> {
 
             // println!("{next_collision_datas:#?}");
             if next_collision_datas.is_empty() {
-                // If not collision was detected it may be because we are too early
-                // we need to wait for a ball to spawn
-                // this is done by finding a snaphshot in the future which
-                // can only happen when a ball goes from dead to not dead
-                let next_ball_spawn = self.spheres.iter()
-                    .flat_map(|s| &s.snapshots)
-                    .filter(|snap| self.multiverse.is_parent(snap.tid, tid))
-                    .filter(|snap| snap.t > t)
-                    .min_by_key(|snap| OF(snap.t));
-                if let Some(next_ball_spawn) = next_ball_spawn {
-                    debug_assert!(!next_ball_spawn.dead);
-                    println!("Found ball spawn: {next_ball_spawn:?}");
-                    current_times.insert(tid, next_ball_spawn.t);
+                if let Some(future_event_t) = future_event_t {
+                    println!("tid {tid} waiting for future event {future_event_t}");
+                    current_times.insert(tid, future_event_t);
                 }
                 else {
-                    // timeline is assumed dead
-                    println!("Dead timeline {tid:?}");
+                    // Nothing will ever happen on this timeline
+                    println!("Dead tid {tid}");
                     current_times.remove(&tid);
                     continue;
                 }
@@ -724,7 +730,13 @@ impl<'a> Simulation<'a> {
                 for (idx, snap) in new_snapshots {
                     let snaps = &mut self.spheres[idx].snapshots;
                     // Asserts that the new snapshot does not break sorting 
-                    debug_assert!(snaps.iter().filter(|s| s.tid == snap.tid).all(|s| s.t <= snap.t));
+                    debug_assert!(
+                        snaps.iter().filter(|s| s.sid == snap.sid && s.tid == snap.tid).all(|s| s.t <= snap.t),
+                        "{idx}.{} - {:?} + {:?}",
+                        snap.sid,
+                        snaps.iter().filter(|s| s.sid == snap.sid && s.tid == snap.tid).map(|snap| snap.t).collect_vec(),
+                        snap.t
+                    );
                     snaps.push(snap);
                 }
             }

@@ -43,7 +43,7 @@ async fn main() {
                 Vec2::new(85., 50.),
             ),
             link_to: 1,
-            time_offset: -2.2,
+            time_offset: -2.3,
             // time_offset: -1.,
             // time_offset: 0.,
             // time_offset: 0.5,
@@ -64,25 +64,40 @@ async fn main() {
             radius: 3.,
             ..Default::default()
         });
-        // sim.push_sphere(te::Sphere {
-        //     initial_pos: glam::Vec2::new(20., 6.),
-        //     initial_velocity: glam::Vec2::new(30., 30.),
-        //     radius: 3.,
-        //     ..Default::default()
-        // });
-        // sim.push_sphere(te::Sphere {
-        //     initial_pos: glam::Vec2::new(20., 20.),
-        //     initial_velocity: glam::Vec2::new(40., -30.),
-        //     radius: 3.,
-        //     ..Default::default()
-        // });
+        sim.push_sphere(te::Sphere {
+            initial_pos: glam::Vec2::new(20., 6.),
+            initial_velocity: glam::Vec2::new(30., 30.),
+            radius: 3.,
+            ..Default::default()
+        });
+        sim.push_sphere(te::Sphere {
+            initial_pos: glam::Vec2::new(20., 20.),
+            initial_velocity: glam::Vec2::new(40., -30.),
+            radius: 3.,
+            ..Default::default()
+        });
         sim
     };
     println!("Simulating...");
-    let simulation_result = sim.simulate(15f32);
+    let simulation_result = sim.simulate(60f32);
     let sim_duration = simulation_result.max_t();
     println!("{simulation_result:#?}");
     println!("Finished simulation");
+
+    {
+        let mut ts = simulation_result.spheres.iter()
+            .flat_map(|sphere| &sphere.snapshots)
+            .map(|snap| snap.tid)
+            .unique()
+            .collect_vec();
+        ts.sort();
+        for &t1 in &ts {
+            for &t2 in &ts {
+                println!("is_parent({t1}, {t2}) = {}", simulation_result.multiverse.is_parent(t1, t2));
+            }
+            println!();
+        }
+    }
 
     let mut cam_offset = Vec2::ZERO;
     let mut zoom = 1.;
