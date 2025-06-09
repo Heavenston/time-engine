@@ -79,7 +79,7 @@ async fn main() {
         sim
     };
     println!("Simulating...");
-    let simulation_result = sim.simulate(10f32);
+    let simulation_result = sim.simulate(30f32);
     let sim_duration = simulation_result.max_t();
     println!("{simulation_result:#?}");
     println!("Finished simulation");

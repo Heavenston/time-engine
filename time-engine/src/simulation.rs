@@ -14,39 +14,34 @@ const MAX_ITERATIONS: usize = 1_000;
 const MAX_STAGNATION: usize = 50;
 
 // FIXME: AI generated \o/
-fn resolve_disk_collision(
+pub fn resolve_disk_collision(
+    pos1: Vec2,
+    vel1: Vec2,
     mass1: f32,
-    velocity1: Vec2,
+    pos2: Vec2,
+    vel2: Vec2,
     mass2: f32,
-    velocity2: Vec2,
-    collision_normal: Vec2,
 ) -> (Vec2, Vec2) {
-    // Ensure the collision normal is normalized
-    let normal = collision_normal.normalize();
-    
-    // Calculate relative velocity
-    let relative_velocity = velocity1 - velocity2;
-    
-    // Calculate relative velocity along the collision normal
-    let velocity_along_normal = relative_velocity.dot(normal);
-    
-    // Don't resolve if velocities are separating
-    if velocity_along_normal > 0.0 {
-        return (velocity1, velocity2);
+    let delta_pos = pos1 - pos2;
+    let delta_vel = vel1 - vel2;
+    let dist2 = delta_pos.length_squared();
+
+    // Avoid division by zero (shouldn't happen if disks are colliding)
+    if dist2 == 0.0 {
+        return (vel1, vel2);
     }
-    
-    // Calculate the collision impulse magnitude
-    let total_mass = mass1 + mass2;
-    let impulse_magnitude = 2.0 * velocity_along_normal / total_mass;
-    
-    // Calculate impulse vector
-    let impulse = impulse_magnitude * normal;
-    
-    // Calculate new velocities
-    let velocity1_new = velocity1 - (mass2 * impulse);
-    let velocity2_new = velocity2 + (mass1 * impulse);
-    
-    (velocity1_new, velocity2_new)
+
+    let mass_sum = mass1 + mass2;
+
+    let v1_proj = delta_vel.dot(delta_pos) / dist2;
+    let v1_new = vel1 - (2.0 * mass2 / mass_sum) * v1_proj * delta_pos;
+
+    let delta_pos2 = pos2 - pos1;
+    let delta_vel2 = vel2 - vel1;
+    let v2_proj = delta_vel2.dot(delta_pos2) / dist2;
+    let v2_new = vel2 - (2.0 * mass1 / mass_sum) * v2_proj * delta_pos2;
+
+    (v1_new, v2_new)
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -450,25 +445,19 @@ impl<'a> Simulation<'a> {
 
         // println!("Found impact at {impact_t}");
 
-        let normal = (snap1.pos - snap2.pos).normalize();
-        let (vel1, vel2) = resolve_disk_collision(1., snap1.vel, 1., snap2.vel, normal);
+        let impact_snap1 = snap1.extrapolate_to(impact_t).with_tid(tid);
+        let impact_snap2 = snap2.extrapolate_to(impact_t).with_tid(tid);
+        let (vel1, vel2) = resolve_disk_collision(
+            impact_snap1.pos, impact_snap1.vel, 1.,
+            impact_snap2.pos, impact_snap2.vel, 1.,
+        );
 
         Some(SimulationCollisionResult {
             kind: "sphere-sphere",
             at_t: impact_t,
             new_snapshots: vec![
-                (
-                    idx1,
-                    snap1.extrapolate_to(impact_t)
-                        .with_tid(tid)
-                        .with_vel(vel1, sphere1.radius, self.world_state)
-                ),
-                (
-                    idx2,
-                    snap2.extrapolate_to(impact_t)
-                        .with_tid(tid)
-                        .with_vel(vel2, sphere2.radius, self.world_state)
-                ),
+                (idx1, impact_snap1.with_vel(vel1, sphere1.radius, self.world_state)),
+                (idx2, impact_snap2.with_vel(vel2, sphere2.radius, self.world_state)),
             ],
         })
     }
