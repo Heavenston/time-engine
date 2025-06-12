@@ -1,3 +1,5 @@
+#![feature(iter_collect_into)]
+
 mod world_state;
 pub use world_state::*;
 mod simulation;
@@ -8,6 +10,8 @@ mod timeline_id;
 pub use timeline_id::*;
 mod physics_utils;
 pub use physics_utils::*;
+mod immutable_util;
+pub(crate) use immutable_util::*;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortalDirection {

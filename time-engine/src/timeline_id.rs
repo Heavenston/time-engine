@@ -7,6 +7,7 @@ pub struct TimelineId {
 }
 
 impl TimelineId {
+    /// This timelines has no nodes before this time
     pub fn start(&self) -> f32 {
         self.start
     }
