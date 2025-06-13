@@ -1,6 +1,5 @@
 mod draw_polygon;
 mod simulation_renderer;
-use std::ops::ControlFlow;
 
 use simulation_renderer::{render_simulation, RenderSimulationArgs};
 
@@ -24,11 +23,11 @@ async fn main() {
             height: 20.,
             in_transform: Affine2::from_angle_translation(
                 std::f32::consts::PI,
-                Vec2::new(85., 50.),
+                Vec2::new(98., 50.),
             ),
             out_transform: Affine2::from_angle_translation(
                 std::f32::consts::FRAC_PI_2,
-                Vec2::new(50., 85.),
+                Vec2::new(50., 98.),
             ),
             time_offset: 0.,
         });
@@ -53,7 +52,7 @@ async fn main() {
         sim
     };
 
-    let mut simulator = sim.create_simulator(60.);
+    let mut simulator = sim.create_simulator(10.);
     let mut step_count = 0;
 
     let mut cam_offset = Vec2::ZERO;
@@ -159,7 +158,6 @@ async fn main() {
                     ui.horizontal(|ui| {
                         ui.add(egui::Slider::new(&mut time, 0. ..=simulator.max_time())
                             .suffix("s")
-                            .fixed_decimals(2)
                         );
                         if ui.button(if is_paused { "Resume" } else { "Pause" }).clicked() {
                             is_paused = !is_paused;

@@ -1,4 +1,4 @@
-use std::{collections::{self, HashMap}, ops::ControlFlow};
+use std::{ collections::HashMap, ops::{ ControlFlow, Range, RangeFrom } };
 
 use glam::{ Affine2, Vec2 };
 use i_overlay::i_shape::base::data::Shapes;
@@ -15,20 +15,19 @@ use super::*;
 ///
 /// All timelines are input timelines (as the portal is created at the start of
 /// the simulation and so in all timelines) though not all timelines are output ones
-#[derive(Debug, Clone)]
-struct SimPortal {
-    pub in_transform: Affine2,
-    pub out_transform: Affine2,
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct SimPortal {
+    pub transform: Affine2,
+    pub height: f32,
+    pub linked_to: usize,
     pub time_offset: f32,
-
-    /// Maps input timelines to output timelines
-    pub timelines_in_out: HashMap<TimelineId, TimelineId>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct SimSphereNewState {
     vel: Vec2,
     pos: Vec2,
+    portal_traversals: tinyvec::ArrayVec<[SimPortalTraversal; 4]>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +90,55 @@ pub enum SimStepBreakReason {
     Finished,
 }
 
+#[derive(Debug, Clone)]
+pub enum SimTimeRange {
+    Range(Range<f32>),
+    RangeFrom(RangeFrom<f32>),
+}
+
+impl SimTimeRange {
+    pub fn new(start: f32, end: Option<f32>) -> Self {
+        match end {
+            Some(end) => Self::Range(start..end),
+            None => Self::RangeFrom(start..),
+        }
+    }
+
+    pub fn start(&self) -> f32 {
+        match self {
+            SimTimeRange::Range(range) => range.start,
+            SimTimeRange::RangeFrom(range_from) => range_from.start,
+        }
+    }
+
+    pub fn end(&self) -> Option<f32> {
+        match self {
+            SimTimeRange::Range(range) => Some(range.end),
+            SimTimeRange::RangeFrom(_) => None,
+        }
+    }
+
+    pub fn contains(&self, val: f32) -> bool {
+        val >= self.start() && self.end().is_none_or(|end| val < end)
+    }
+
+    pub fn offset(&self, offset: f32) -> Self {
+        Self::new(self.start() + offset, self.end().map(|end| end + offset))
+    }
+}
+
+impl From<Range<f32>> for SimTimeRange {
+    fn from(range: Range<f32>) -> Self {
+        Self::Range(range)
+    }
+}
+
+impl From<RangeFrom<f32>> for SimTimeRange {
+    fn from(range_from: RangeFrom<f32>) -> Self {
+        Self::RangeFrom(range_from)
+    }
+}
+
 pub struct Simulator<'a> {
     world_state: &'a WorldState,
     multiverse: TimelineMultiverse,
@@ -121,19 +169,26 @@ impl<'a> Simulator<'a> {
                 age: 0.,
                 pos: sphere.initial_pos,
                 vel: sphere.initial_velocity,
+                portal_traversals: default(),
             })
             .map(|snapshot| snapshots.insert(&multiverse, snapshot, None))
             .collect_vec();
 
-        let portals = world_state.portals.iter()
-                .map(|portal| SimPortal {
-                    in_transform: portal.in_transform,
-                    out_transform: portal.out_transform,
-                    time_offset: portal.time_offset,
-
-                    timelines_in_out: default(),
-                })
-                .collect_vec();
+        let mut portals = Vec::<SimPortal>::new();
+        for &portal in &world_state.portals {
+            portals.push(SimPortal {
+                transform: portal.in_transform,
+                height: portal.height,
+                linked_to: portals.len() + 1,
+                time_offset: 0.,
+            });
+            portals.push(SimPortal {
+                transform: portal.out_transform,
+                height: portal.height,
+                linked_to: portals.len() - 1,
+                time_offset: portal.time_offset,
+            });
+        }
 
         let timelines_present: HashMap<TimelineId, f32> = starts.iter()
             .map(|&link| {
@@ -183,26 +238,32 @@ impl<'a> Simulator<'a> {
             .unwrap_or((0., 0.))
     }
 
-    fn interpolate_snapshot_to(&self, time: f32, snap: &SimSnapshot) -> SimSnapshot {
-        assert!(time >= snap.time);
-        let dt = time - snap.time;
-        SimSnapshot {
-            original_idx: snap.original_idx,
-            radius: snap.radius,
-            time,
-            timeline: snap.timeline,
-            age: snap.age + dt,
-            pos: snap.pos + snap.vel * dt,
-            vel: snap.vel,
-        }
-    }
-
     fn node_has_children(&self, link: SimSnapshotLink, timeline_id: TimelineId) -> bool {
         let Some(node) = self.snapshots.get_node(link)
         else { return false; };
 
         node.age_children.iter()
             .any(|&child_link| self.multiverse.is_parent(self.snapshots[child_link].timeline, timeline_id))
+    }
+
+    fn get_node_time_ranges<'b>(&'b self, link: SimSnapshotLink, timeline_id: TimelineId) -> impl Iterator<Item = SimTimeRange> + 'b {
+        self.snapshots.get_node(link).into_iter().flat_map(move |node| {
+            let snap = node.snapshot;
+            let min_time = node.age_children.iter().copied()
+                .filter(|&child_link| self.multiverse.is_parent(self.snapshots[child_link].timeline, timeline_id))
+                .map(|child_link| self.snapshots[child_link].time)
+                .reduce(f32::min)
+                // if the minimum children time is before the current node
+                // this means there is a time travel which means the current
+                // node represent no time
+                .map(|min_t| min_t.max(snap.time));
+
+            let range = SimTimeRange::new(snap.time, min_time);
+            std::iter::once(range.clone())
+                .chain(snap.portal_traversals.into_iter()
+                    .map(move |traversal| range.offset(traversal.time_offset()))
+                )
+        })
     }
 
     pub fn time_query(&self, time: Option<f32>) -> Vec<SimSnapshotLink> {
@@ -267,18 +328,24 @@ impl<'a> Simulator<'a> {
                 let min_distance = children.iter()
                     .map(|&(_, distance)| distance)
                     .min();
-                let min_time = children.iter()
-                    .map(|&(link, _)| self.snapshots[link].time)
-                    .reduce(f32::min)
-                    // if the minimum children type 
-                    .map(|min_t| min_t.max(node.snapshot.time));
+                // let min_time = children.iter()
+                //     .map(|&(link, _)| self.snapshots[link].time)
+                //     .reduce(f32::min)
+                //     // if the minimum children type 
+                //     .map(|min_t| min_t.max(node.snapshot.time));
 
                 // This checks that if the snapshot represent the correct time
                 // interval for this timeline we add it to the results
-                if time.is_some_and(|time|
-                    node.snapshot.time >= time && min_time.is_none_or(|min_time| min_time > time)
-                ) || node.age_children.is_empty() /* FIXME: Is this sufficient? */ {
-                    result.push(link);
+                if let Some(time) = time {
+                    let mut time_ranges = self.get_node_time_ranges(link, timeline_id);
+                    if time_ranges.any(|range| range.contains(time)) {
+                        result.push(link);
+                    }
+                }
+                else {
+                    if node.age_children.is_empty() { // FIXME: Is this sufficient? This may miss some nodes
+                        result.push(link);
+                    }
                 }
 
                 children.iter()
@@ -308,17 +375,20 @@ impl<'a> Simulator<'a> {
     }
 
     fn cast_sphere_wall_collision(&self, snap: &SimSnapshot) -> Option<SimSphereCollision<1>> {
-        let walls_shape = i_shape_to_parry_shape(self.world_state.get_static_body_collision());
+        let walls_shape = self.world_state.get_static_body_collision();
+        let walls_shape = snap.portal_traversals.iter()
+            .fold(walls_shape, |walls_shape, traversal|
+                clip_shapes_on_portal(walls_shape, traversal.portal_in.transform, traversal.direction)
+            );
+        let walls_shape = i_shape_to_parry_shape(walls_shape);
         let sphere_shape = parry2d::shape::Ball::new(snap.radius);
 
         let collision = parry2d::query::cast_shapes(
             &default(), &default(), &walls_shape,
             &na::Isometry2::translation(snap.pos.x, snap.pos.y), &na::vector![snap.vel.x, snap.vel.y], &sphere_shape,
             parry2d::query::ShapeCastOptions {
-                max_time_of_impact: f32::MAX,
-                target_distance: 0.0,
                 stop_at_penetration: false,
-                compute_impact_geometry_on_penetration: true,
+                ..default()
             }
         ).expect("Supported")?;
 
@@ -330,10 +400,7 @@ impl<'a> Simulator<'a> {
 
         Some(SimSphereCollision {
             impact_time,
-            states: [SimSphereNewState {
-                vel: new_vel,
-                pos: new_pos,
-            }]
+            states: [SimSphereNewState { vel: new_vel, pos: new_pos, ..default() }]
         })
     }
 
@@ -342,6 +409,8 @@ impl<'a> Simulator<'a> {
         debug_assert!(self.multiverse.is_related(s1.timeline, s2.timeline));
 
         // NOTE: Generated by claude-4-sonnet
+        // TODO: Try to use parry2d::query::cast_shapes too, maybe the perf is
+        //       better anyway
         
         let dp = s2.pos - s1.pos;
         let dv = s2.vel - s1.vel;
@@ -404,11 +473,115 @@ impl<'a> Simulator<'a> {
         Some(SimSphereCollision {
             impact_time: s1.time + impact_dt,
             states: [
-                SimSphereNewState { vel: vel1, pos: pos1 },
-                SimSphereNewState { vel: vel2, pos: pos2 },
+                SimSphereNewState { vel: vel1, pos: pos1, ..default() },
+                SimSphereNewState { vel: vel2, pos: pos2, ..default() },
             ],
         })
     }
+
+    fn cast_sphere_portal_traversal_start(&self, snap: &SimSnapshot, portal_idx: usize) -> Option<SimSphereCollision<1>> {
+        let sphere_shape = parry2d::shape::Ball::new(snap.radius);
+        let portal = self.portals[portal_idx];
+        let portal_shape = parry2d::shape::Polyline::new(vec![
+            na::point![0., -portal.height / 2.],
+            na::point![0., portal.height / 2.],
+        ], None);
+
+        if snap.portal_traversals.iter().any(|tr| tr.portal_in_idx == portal_idx) {
+            return None;
+        }
+
+        // Anoying and imperfect conversion from glam's Isometry to nalgebra's 
+        let plane_iso = {
+            let (scale, angle, trans) = portal.transform.to_scale_angle_translation();
+            assert_eq!(scale, Vec2::splat(1.));
+            na::Isometry::from_parts(
+                na::Translation2::new(trans.x, trans.y),
+                na::UnitComplex::from_angle(angle)
+            )
+        };
+
+        let result = parry2d::query::cast_shapes(
+            &plane_iso, &default(), &portal_shape,
+
+            &na::Isometry2::translation(snap.pos.x, snap.pos.y), &na::vector![snap.vel.x, snap.vel.y], &sphere_shape,
+
+            parry2d::query::ShapeCastOptions {
+                stop_at_penetration: true,
+                ..default()
+            }
+        ).expect("Ball on ball should be supported")?;
+
+        let impact_time = result.time_of_impact + snap.time;
+        let direction = if result.normal1.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
+
+        let vel = snap.vel;
+        let pos = snap.pos + vel * result.time_of_impact;
+        let traversal = SimPortalTraversal {
+            portal_in_idx: portal_idx,
+            portal_in: portal,
+            portal_out_idx: portal.linked_to,
+            portal_out: self.portals[portal.linked_to],
+            end_age: snap.age + result.time_of_impact + SimPortalTraversal::compute_end_dt(snap.radius, pos, vel, portal.transform),
+            direction,
+        };
+
+        Some(SimSphereCollision {
+            impact_time,
+            states: [SimSphereNewState {
+                vel, pos,
+                portal_traversals: tinyvec::array_vec!(_ => traversal),
+            }],
+        })
+    }
+
+    // fn get_next_sphere_portal_traversals_end(&self, sphere_idx: usize, portal_idx: usize, t: f32, sid: StreamId, tid: TimelineId) -> Option<SimulationCollisionResult> {
+    //     let sphere = self.spheres.get(sphere_idx)?;
+    //     let snap = sphere.get_snapshot(&self.multiverse, t, sid, tid)?;
+    //     if snap.tid != tid {
+    //         return None;
+    //     }
+    //     if !snap.portal_traversals.iter().any(|tr| tr.portal_in_idx == portal_idx) {
+    //         return None;
+    //     }
+    //     let portal = &self.world_state.portals[portal_idx];
+    //     let out_portal_idx = portal.link_to;
+    //     let out_portal = &self.world_state.portals[out_portal_idx];
+
+    //     let inv_portal_trans = portal.initial_transform.inverse();
+    //     let rel_vel = inv_portal_trans.transform_vector2(snap.vel);
+    //     let rel_pos = inv_portal_trans.transform_point2(snap.pos);
+
+    //     // compute when the center of the sphere touches the portal
+    //     // nothing in parry2d can help so we hardcode the solution
+    //     let impact_dt = -rel_pos.x / rel_vel.x;
+    //     // Impact in the past or alread on the impact -> nothing to be done
+    //     if impact_dt <= 0. {
+    //         return None;
+    //     }
+
+    //     let impact_t = t + impact_dt + 0.00001;
+    //     let time_travel_dt = out_portal.time_offset - portal.time_offset;
+
+    //     let impact_snap = snap
+    //         .extrapolate_to(impact_t);
+    //     let after_impact_snap = impact_snap
+    //         .teleport(
+    //             out_portal.initial_transform.transform_point2(inv_portal_trans.transform_point2(impact_snap.pos)),
+    //             out_portal.initial_transform.transform_vector2(inv_portal_trans.transform_vector2(impact_snap.vel)),
+    //         )
+    //         .with_swaped_traversal(portal_idx)
+    //         .offset_time(&self.multiverse, time_travel_dt);
+
+    //     Some(SimulationCollisionResult {
+    //         kind: "sphere-portal-end",
+    //         at_t: impact_t,
+    //         new_snapshots: vec![
+    //             (sphere_idx, impact_snap.dead()),
+    //             (sphere_idx, after_impact_snap),
+    //         ],
+    //     })
+    // }
 
     pub fn finished(&self) -> bool {
         self.timelines_present.values().copied()
@@ -426,7 +599,7 @@ impl<'a> Simulator<'a> {
 
         let snapshots = self.timeline_query(Some(time), timeline_id).into_iter()
             .map(|link| (link, self.snapshots[link]))
-            .map(|(link, snap)| (link, self.interpolate_snapshot_to(time, &snap)))
+            .map(|(link, snap)| (link, snap.extrapolate(time)))
             .collect_vec()
         ;
 
@@ -449,7 +622,7 @@ impl<'a> Simulator<'a> {
             .chain(
                 snapshots.iter().map(|(l, s)| (*l, s))
                 .filter_map(|(link, snap)| self.cast_sphere_wall_collision(snap)
-                    .map(|col| SimCollisionInfo::<1> {
+                    .map(|col| SimCollisionInfo {
                         col,
                         snaps: [SimLinkedSnapshot { link, snap }]
                     })
@@ -460,12 +633,23 @@ impl<'a> Simulator<'a> {
                 snapshots.iter().map(|(l, s)| (*l, s))
                 .array_combinations::<2>()
                 .filter_map(|[(l1, s1), (l2, s2)]| self.cast_sphere_sphere_collision(s1, s2)
-                    .map(|col| SimCollisionInfo::<2> {
+                    .map(|col| SimCollisionInfo {
                         col,
                         snaps: [
                             SimLinkedSnapshot { link: l1, snap: s1 },
                             SimLinkedSnapshot { link: l2, snap: s2 },
                         ]
+                    })
+                    .map(SimGenericCollisionInfo::from)
+                )
+            )
+            .chain(
+                snapshots.iter().map(|(l, s)| (*l, s))
+                .cartesian_product(0..self.portals.len())
+                .filter_map(|((l1, s1), portal_idx)| self.cast_sphere_portal_traversal_start(s1, portal_idx)
+                    .map(|col| SimCollisionInfo {
+                        col,
+                        snaps: [SimLinkedSnapshot { link: l1, snap: s1 }]
                     })
                     .map(SimGenericCollisionInfo::from)
                 )
@@ -482,7 +666,8 @@ impl<'a> Simulator<'a> {
             });
 
         for info in ones_collisions {
-            let new_snapshot = info.snaps[0].snap.advanced(info.col.impact_time, info.col.states[0].pos, info.col.states[0].vel);
+            let new_snapshot = info.snaps[0].snap.advanced(info.col.impact_time, info.col.states[0].pos, info.col.states[0].vel)
+                .with_portal_traversals(info.col.states[0].portal_traversals);
             self.snapshots.insert(&self.multiverse, new_snapshot, Some(info.snaps[0].link));
 
             self.timelines_present.entry(new_snapshot.timeline)
@@ -492,9 +677,11 @@ impl<'a> Simulator<'a> {
 
         for info in twos_collisions {
             let link0 = info.snaps[0].link;
-            let new_snapshot1 = info.snaps[0].snap.advanced(info.col.impact_time, info.col.states[0].pos, info.col.states[0].vel);
+            let new_snapshot1 = info.snaps[0].snap.advanced(info.col.impact_time, info.col.states[0].pos, info.col.states[0].vel)
+                .with_portal_traversals(info.col.states[0].portal_traversals);
             let link1 = info.snaps[1].link;
-            let new_snapshot2 = info.snaps[1].snap.advanced(info.col.impact_time, info.col.states[1].pos, info.col.states[1].vel);
+            let new_snapshot2 = info.snaps[1].snap.advanced(info.col.impact_time, info.col.states[1].pos, info.col.states[1].vel)
+                .with_portal_traversals(info.col.states[1].portal_traversals);
 
             debug_assert!(self.multiverse.is_related(new_snapshot1.timeline, new_snapshot2.timeline));
             let child_timeline = max(new_snapshot1.timeline, new_snapshot2.timeline);

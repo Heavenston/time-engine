@@ -2,8 +2,59 @@ use super::*;
 
 use std::ops::{Index, IndexMut};
 
-use glam::Vec2;
+use glam::{Affine2, Vec2};
 use itertools::Itertools;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct SimPortalTraversal {
+    pub portal_in_idx: usize,
+    pub portal_in: SimPortal,
+    pub portal_out_idx: usize,
+    pub portal_out: SimPortal,
+    pub end_age: f32,
+    pub direction: PortalDirection,
+}
+
+impl SimPortalTraversal {
+    /// Finding when a sphere wont intersect with the portal anymore
+    /// nothing in parry2d can help so we hardcode a sphere-line solution
+    pub fn compute_end_dt(sphere_radius: f32, sphere_pos: Vec2, sphere_vel: Vec2, portal_transform: Affine2) -> f32 {
+        let inv_portal_trans = portal_transform.inverse();
+        let rel_vel = inv_portal_trans.transform_vector2(sphere_vel);
+        let rel_pos = inv_portal_trans.transform_point2(sphere_pos);
+
+        let t0 = (sphere_radius - rel_pos.x) / rel_vel.x;
+        let t1 = (-sphere_radius - rel_pos.x) / rel_vel.x;
+
+        // Not sure on the math of alaways taking the max but anyway it seems to work
+        t0.max(t1)
+    }
+
+    pub fn time_offset(&self) -> f32 {
+        self.portal_out.time_offset - self.portal_in.time_offset
+    }
+
+    pub fn swap(self) -> Self {
+        Self {
+            portal_in_idx: self.portal_out_idx,
+            portal_in: self.portal_out,
+            portal_out_idx: self.portal_in_idx,
+            portal_out: self.portal_in,
+            end_age: self.end_age,
+            direction: self.direction.swap(),
+        }
+    }
+
+    pub fn transform_point(&self, point: Vec2) -> Vec2 {
+        let inv_input = self.portal_in.transform.inverse();
+        self.portal_out.transform.transform_point2(inv_input.transform_point2(point))
+    }
+
+    pub fn transform_vector(&self, vector: Vec2) -> Vec2 {
+        let inv_input = self.portal_in.transform.inverse();
+        self.portal_out.transform.transform_vector2(inv_input.transform_vector2(vector))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SimSnapshot {
@@ -20,17 +71,34 @@ pub struct SimSnapshot {
     pub age: f32,
     pub pos: Vec2,
     pub vel: Vec2,
+    /// List of portals this sphere is traversing
+    /// Max length set to one because i dont think it will work with more than
+    /// one for now...
+    pub portal_traversals: tinyvec::ArrayVec<[SimPortalTraversal; 1]>,
 }
 
 impl SimSnapshot {
     pub fn advanced(self, new_time: f32, new_pos: Vec2, new_vel: Vec2) -> Self {
         assert!(self.time <= new_time);
         let dt = new_time - self.time;
+        let new_age = self.age + dt;
+        let changed_vel = new_vel != self.vel;
         Self {
             time: new_time,
-            age: self.age + dt,
+            age: new_age,
             pos: new_pos,
             vel: new_vel,
+            portal_traversals: self.portal_traversals.into_iter()
+                .map(|traversal| {
+                    if !changed_vel { return traversal; }
+
+                    SimPortalTraversal {
+                        end_age: SimPortalTraversal::compute_end_dt(self.radius, new_pos, new_vel, traversal.portal_in.transform),
+                        ..traversal
+                    }
+                })
+                .filter(|traversal| traversal.end_age > new_age)
+                .collect(),
             ..self
         }
     }
@@ -38,6 +106,43 @@ impl SimSnapshot {
     pub fn extrapolate(self, new_time: f32) -> Self {
         let dt = new_time - self.time;
         self.advanced(new_time, self.pos + self.vel * dt, self.vel)
+    }
+
+    pub fn with_portal_traversals(mut self, traversal: impl IntoIterator<Item = SimPortalTraversal>) -> Self {
+        self.portal_traversals.extend(traversal);
+        self
+    }
+
+    /// Returns true if this snapshot is behind a portal
+    /// in other words if this snapshot is coming -out of the portals listend
+    /// in portal_traversal
+    pub fn is_ghost(&self) -> bool {
+        // FIXME: probably incorrect for >1 portal traversals
+        // (asserts just as reminder of this fact)
+        assert!(self.portal_traversals.len() <= 1);
+
+        self.portal_traversals.iter()
+            .any(|traversal| {
+                let rel_pos = traversal.portal_in.transform.inverse().transform_point2(self.pos);
+                (rel_pos.x < 0.) != (traversal.direction.is_front())
+            })
+    }
+
+    pub fn get_ghosts(self) -> impl Iterator<Item = Self> {
+        // FIXME: probably incorrect for >1 portal traversals
+        // (asserts just as reminder of this fact)
+        assert!(self.portal_traversals.len() <= 1);
+
+        self.portal_traversals.into_iter()
+            .map(move |traversal| Self {
+                time: self.time + traversal.time_offset(),
+                pos: traversal.transform_point(self.pos),
+                vel: traversal.transform_vector(self.vel),
+                portal_traversals: self.portal_traversals.iter()
+                    .map(|traversal| traversal.swap())
+                    .collect(),
+                ..self
+            })
     }
 }
 
@@ -100,6 +205,7 @@ impl SimSnapshotContainer {
     }
 
     pub fn insert(&mut self, multiverse: &TimelineMultiverse, snapshot: SimSnapshot, age_previous: Option<SimSnapshotLink>) -> SimSnapshotLink {
+        debug_assert!(!snapshot.is_ghost());
         let link = SimSnapshotLink { idx: self.nodes.len() };
 
         self.nodes.push(SimSnapshotNode {

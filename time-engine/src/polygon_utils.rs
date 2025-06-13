@@ -1,11 +1,11 @@
-use glam::Vec2;
+use crate::*;
+
+use glam::{Affine2, Vec2};
 use i_overlay::{core::{fill_rule::FillRule, overlay_rule::OverlayRule}, float::single::SingleFloatOverlay, i_shape::base::data::Shapes};
 use i_triangle::float::triangulatable::Triangulatable;
 use itertools::Itertools;
 use parry2d::shape;
 use nalgebra as na;
-
-use crate::{Portal, PortalDirection};
 
 /// Size of the polygon created for clipping behind a portal
 /// should aproximate a half space so be pretty big, but not too much as to
@@ -31,14 +31,14 @@ pub fn circle_polygon(
 
 pub fn clip_shapes_on_portal(
     shapes: Shapes<Vec2>,
-    portal: &Portal,
+    portal_transform: Affine2,
     direction: PortalDirection,
 ) -> Shapes<Vec2> {
     let h2 = PORTAL_CLIPPING_EXTENT.y / 2.;
-    let start = portal.in_transform.transform_point2(Vec2::new(0., -h2));
-    let end = portal.in_transform.transform_point2(Vec2::new(0., h2));
+    let start = portal_transform.transform_point2(Vec2::new(0., -h2));
+    let end = portal_transform.transform_point2(Vec2::new(0., h2));
 
-    let normal = portal.in_transform.transform_vector2(Vec2::new(-1., 0.)) * PORTAL_CLIPPING_EXTENT.x;
+    let normal = portal_transform.transform_vector2(Vec2::new(-1., 0.)) * PORTAL_CLIPPING_EXTENT.x;
     let normal = if direction.is_back() { -normal } else { normal };
 
     let clip_polygon = [
