@@ -23,11 +23,11 @@ async fn main() {
             height: 20.,
             in_transform: Affine2::from_angle_translation(
                 std::f32::consts::PI,
-                Vec2::new(98., 50.),
+                Vec2::new(90., 50.),
             ),
             out_transform: Affine2::from_angle_translation(
                 std::f32::consts::FRAC_PI_2,
-                Vec2::new(50., 98.),
+                Vec2::new(50., 90.),
             ),
             time_offset: 0.,
         });
@@ -44,7 +44,7 @@ async fn main() {
             ..Default::default()
         });
         sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(50., 70.), 
+            initial_pos: glam::Vec2::new(50., 60.), 
             initial_velocity: glam::Vec2::new(0., 30.),
             radius: 3.,
             ..Default::default()
@@ -52,7 +52,7 @@ async fn main() {
         sim
     };
 
-    let mut simulator = sim.create_simulator(10.);
+    let mut simulator = sim.create_simulator(30.);
     let mut step_count = 0;
 
     let mut cam_offset = Vec2::ZERO;
@@ -96,7 +96,8 @@ async fn main() {
             }
             else {
                 step_count += 1;
-                if simulator.step().is_break() {
+                let _ = simulator.step();
+                if simulator.finished() {
                     simulator.extrapolate_to(simulator.max_time());
                 }
             }
@@ -136,6 +137,10 @@ async fn main() {
                     ui.horizontal(|ui| {
                         ui.label("Total Simulation Steps:");
                         ui.colored_label(egui::Color32::GRAY, format!("{step_count}"));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Max time:");
+                        ui.colored_label(egui::Color32::GRAY, format!("{max_time}"));
                     });
                     ui.horizontal(|ui| {
                         ui.label("Finished simulating:");

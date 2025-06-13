@@ -109,8 +109,19 @@ impl SimSnapshot {
     }
 
     pub fn with_portal_traversals(mut self, traversal: impl IntoIterator<Item = SimPortalTraversal>) -> Self {
-        self.portal_traversals.extend(traversal);
+        // FIXME: Only kinda obvious because there is only one maximum traversal
+        let new: tinyvec::ArrayVec<[SimPortalTraversal; 1]> = traversal.into_iter().collect();
+        if new.len() > 0 {
+            self.portal_traversals = new;
+        }
         self
+    }
+
+    pub fn offset_time(self, dt: f32) -> Self {
+        Self {
+            time: self.time + dt,
+            ..self
+        }
     }
 
     /// Returns true if this snapshot is behind a portal
@@ -124,7 +135,12 @@ impl SimSnapshot {
         self.portal_traversals.iter()
             .any(|traversal| {
                 let rel_pos = traversal.portal_in.transform.inverse().transform_point2(self.pos);
-                (rel_pos.x < 0.) != (traversal.direction.is_front())
+                if traversal.direction.is_front() {
+                    rel_pos.x > DEFAULT_EPSILON
+                }
+                else {
+                    rel_pos.x < -DEFAULT_EPSILON
+                }
             })
     }
 

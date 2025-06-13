@@ -1,5 +1,5 @@
 use macroquad::prelude::*;
-use i_overlay::{i_shape::base::data::Shapes, mesh::outline::offset::OutlineOffset};
+use i_overlay::{core::{fill_rule::FillRule, overlay_rule::OverlayRule}, float::single::SingleFloatOverlay as _, i_shape::base::data::Shapes, mesh::outline::offset::OutlineOffset};
 use time_engine::{self as te, clip_shapes_on_portal, Simulator};
 use crate::draw_polygon::draw_shapes;
 
@@ -35,8 +35,8 @@ pub fn render_simulation(
         } = snap;
 
         let sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
-        let sphere_shapes = portal_traversals.iter()
-            .fold(sphere_shapes, |sphere_shapes, traversal|
+        let cliped_sphere_shapes = portal_traversals.iter()
+            .fold(sphere_shapes.clone(), |sphere_shapes, traversal|
                 clip_shapes_on_portal(sphere_shapes, traversal.portal_in.transform, traversal.direction)
             );
 
@@ -49,12 +49,14 @@ pub fn render_simulation(
                     outer_offset: 0.5,
                     inner_offset: 0.,
                     join: i_overlay::mesh::style::LineJoin::Bevel,
-                });
+                }).overlay(&sphere_shapes, OverlayRule::Difference, FillRule::EvenOdd);
                 draw_shapes(Vec2::ZERO, &outline, RED);
             }
+
+            draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE.with_alpha(0.5));
         }
 
-        draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE);
+        draw_shapes(Vec2::ZERO, &cliped_sphere_shapes, WHITE);
     }
 
     // Draw portals

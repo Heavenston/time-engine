@@ -6,6 +6,7 @@ use i_overlay::i_shape::base::data::Shapes;
 const PORTALS_WALLS_WIDTH: f32 = 0.1;
 const PORTALS_WALLS_HEIGHT: f32 = 0.5;
 
+#[derive(Debug, Clone, Copy)]
 pub struct Sphere {
     pub initial_time: f32,
     pub initial_pos: Vec2,
@@ -42,6 +43,7 @@ impl Portal {
     }
 }
 
+#[derive(Debug)]
 pub struct WorldState {
     pub(crate) width: f32,
     pub(crate) height: f32,
