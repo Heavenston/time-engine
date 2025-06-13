@@ -39,15 +39,21 @@ async fn main() {
             ..Default::default()
         });
         sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(90., 50.),
+            initial_pos: glam::Vec2::new(50., 50.),
             initial_velocity: glam::Vec2::new(-30., 0.),
+            radius: 3.,
+            ..Default::default()
+        });
+        sim.push_sphere(te::Sphere {
+            initial_pos: glam::Vec2::new(50., 70.), 
+            initial_velocity: glam::Vec2::new(0., 30.),
             radius: 3.,
             ..Default::default()
         });
         sim
     };
 
-    let mut simulator = sim.create_simulator(3.);
+    let mut simulator = sim.create_simulator(60.);
     let mut step_count = 0;
 
     let mut cam_offset = Vec2::ZERO;
@@ -157,8 +163,7 @@ async fn main() {
                     simulator.extrapolate_to(simulator.max_time());
                 }
                 else {
-                    clear();
-                    continue;
+                    time = time.min(simulator.minmax_time().1);
                 }
             }
         }
@@ -172,6 +177,7 @@ async fn main() {
 
         root_ui().label(None, &format!("fps: {}", get_fps()));
         root_ui().label(None, &format!("time: {time:.02}s/{:.02}s", simulator.max_time()));
+        root_ui().label(None, &format!("steps: {step_count}"));
 
         // Draw timeline controls
         set_default_camera();

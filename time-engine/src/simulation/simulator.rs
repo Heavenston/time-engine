@@ -1,9 +1,11 @@
-use std::{collections::HashMap, ops::ControlFlow};
+use std::{collections::{self, HashMap}, ops::ControlFlow};
 
 use glam::{ Affine2, Vec2 };
+use i_overlay::i_shape::base::data::Shapes;
 use itertools::Itertools;
 use ordered_float::OrderedFloat as OF;
 use std::cmp::max;
+use nalgebra as na;
 
 use super::*;
 
@@ -24,21 +26,61 @@ struct SimPortal {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SimSphereCollision {
-    impact_time: f32,
-    vel1: Vec2,
-    pos1: Vec2,
-    vel2: Vec2,
-    pos2: Vec2,
+struct SimSphereNewState {
+    vel: Vec2,
+    pos: Vec2,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SimCollisionInfo<'a> {
-    col: SimSphereCollision,
-    l1: SimSnapshotLink,
-    s1: &'a SimSnapshot,
-    l2: SimSnapshotLink,
-    s2: &'a SimSnapshot,
+struct SimSphereCollision<const N: usize> {
+    impact_time: f32,
+    states: [SimSphereNewState; N],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SimLinkedSnapshot<'a> {
+    link: SimSnapshotLink,
+    snap: &'a SimSnapshot,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SimCollisionInfo<'a, const N: usize> {
+    col: SimSphereCollision<N>,
+    snaps: [SimLinkedSnapshot<'a>; N],
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SimGenericCollisionInfo<'a> {
+    One(SimCollisionInfo<'a, 1>),
+    Two(SimCollisionInfo<'a, 2>),
+}
+
+impl<'a> SimGenericCollisionInfo<'a> {
+    fn impact_time(&self) -> f32 {
+        match self {
+            Self::One(i) => i.col.impact_time,
+            Self::Two(i) => i.col.impact_time,
+        }
+    }
+
+    fn states(&self) -> impl Iterator<Item = (SimLinkedSnapshot<'a>, SimSphereNewState)> {
+        match self {
+            Self::One(i) => i.snaps.iter().copied().zip(i.col.states.iter().copied()),
+            Self::Two(i) => i.snaps.iter().copied().zip(i.col.states.iter().copied()),
+        }
+    }
+}
+
+impl<'a> From<SimCollisionInfo<'a, 1>> for SimGenericCollisionInfo<'a> {
+    fn from(value: SimCollisionInfo<'a, 1>) -> Self {
+        Self::One(value)
+    }
+}
+
+impl<'a> From<SimCollisionInfo<'a, 2>> for SimGenericCollisionInfo<'a> {
+    fn from(value: SimCollisionInfo<'a, 2>) -> Self {
+        Self::Two(value)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,7 +307,37 @@ impl<'a> Simulator<'a> {
         result
     }
 
-    fn cast_sphere_collision(&self, s1: &SimSnapshot, s2: &SimSnapshot) -> Option<SimSphereCollision> {
+    fn cast_sphere_wall_collision(&self, snap: &SimSnapshot) -> Option<SimSphereCollision<1>> {
+        let walls_shape = i_shape_to_parry_shape(self.world_state.get_static_body_collision());
+        let sphere_shape = parry2d::shape::Ball::new(snap.radius);
+
+        let collision = parry2d::query::cast_shapes(
+            &default(), &default(), &walls_shape,
+            &na::Isometry2::translation(snap.pos.x, snap.pos.y), &na::vector![snap.vel.x, snap.vel.y], &sphere_shape,
+            parry2d::query::ShapeCastOptions {
+                max_time_of_impact: f32::MAX,
+                target_distance: 0.0,
+                stop_at_penetration: false,
+                compute_impact_geometry_on_penetration: true,
+            }
+        ).expect("Supported")?;
+
+        let impact_normal = Vec2::new(collision.normal1.x, collision.normal1.y);
+        let impact_dt = collision.time_of_impact;
+        let impact_time = snap.time + impact_dt;
+        let new_vel = snap.vel - 2.0 * snap.vel.dot(impact_normal) * impact_normal;
+        let new_pos = snap.pos + snap.vel * impact_dt;
+
+        Some(SimSphereCollision {
+            impact_time,
+            states: [SimSphereNewState {
+                vel: new_vel,
+                pos: new_pos,
+            }]
+        })
+    }
+
+    fn cast_sphere_sphere_collision(&self, s1: &SimSnapshot, s2: &SimSnapshot) -> Option<SimSphereCollision<2>> {
         debug_assert_eq!(s1.time, s2.time);
         debug_assert!(self.multiverse.is_related(s1.timeline, s2.timeline));
 
@@ -303,16 +375,16 @@ impl<'a> Simulator<'a> {
         let t2 = (-b + sqrt_discriminant) / (2.0 * a);
         
         // We want the earliest positive collision time
-        let impact_time = if t1 > 0.0 {
+        let impact_dt = if t1 > parry2d::math::DEFAULT_EPSILON {
             t1
-        } else if t2 > 0.0 {
+        } else if t2 > parry2d::math::DEFAULT_EPSILON {
             t2
         } else { 
             return None 
         };
         
-        let pos1 = s1.pos + s1.vel * impact_time;
-        let pos2 = s2.pos + s2.vel * impact_time;
+        let pos1 = s1.pos + s1.vel * impact_dt;
+        let pos2 = s2.pos + s2.vel * impact_dt;
         
         // Calculate collision response
         let collision_normal = (pos2 - pos1).normalize();
@@ -325,11 +397,11 @@ impl<'a> Simulator<'a> {
         let vel2 = s2.vel + impulse;
         
         Some(SimSphereCollision {
-            impact_time: s1.time + impact_time,
-            vel1,
-            pos1,
-            vel2,
-            pos2,
+            impact_time: s1.time + impact_dt,
+            states: [
+                SimSphereNewState { vel: vel1, pos: pos1 },
+                SimSphereNewState { vel: vel2, pos: pos2 },
+            ],
         })
     }
 
@@ -363,33 +435,66 @@ impl<'a> Simulator<'a> {
             return ControlFlow::Continue(());
         }
 
-        let collision_infos = snapshots.iter().map(|(l, s)| (*l, s))
-            .array_combinations::<2>()
-            .filter_map(|[(l1, s1), (l2, s2)]| self.cast_sphere_collision(s1, s2)
-                .map(|collision| SimCollisionInfo {
-                    col: collision,
-                    l1, s1,
-                    l2, s2,
-                })
+        let collision_infos = std::iter::empty::<SimGenericCollisionInfo>()
+            .chain(
+                snapshots.iter().map(|(l, s)| (*l, s))
+                .filter_map(|(link, snap)| self.cast_sphere_wall_collision(snap)
+                    .map(|col| SimCollisionInfo::<1> {
+                        col,
+                        snaps: [SimLinkedSnapshot { link, snap }]
+                    })
+                    .map(SimGenericCollisionInfo::from)
+                )
             )
-            .min_set_by_key(|result| OF(result.col.impact_time))
+            .chain(
+                snapshots.iter().map(|(l, s)| (*l, s))
+                .array_combinations::<2>()
+                .filter_map(|[(l1, s1), (l2, s2)]| self.cast_sphere_sphere_collision(s1, s2)
+                    .map(|col| SimCollisionInfo::<2> {
+                        col,
+                        snaps: [
+                            SimLinkedSnapshot { link: l1, snap: s1 },
+                            SimLinkedSnapshot { link: l2, snap: s2 },
+                        ]
+                    })
+                    .map(SimGenericCollisionInfo::from)
+                )
+            )
+            .min_set_by_key(|result| OF(result.impact_time()))
         ;
 
         self.timelines_present.remove(&timeline_id);
 
-        for info in collision_infos {
-            let new_snapshot1 = info.s1.advanced(info.col.impact_time, info.col.pos1, info.col.vel1);
-            let new_snapshot2 = info.s2.advanced(info.col.impact_time, info.col.pos2, info.col.vel2);
+        let (ones_collisions, twos_collisions): (Vec::<_>, Vec::<_>) = collision_infos.into_iter()
+            .partition_map(|h| match h {
+                SimGenericCollisionInfo::One(i1) => itertools::Either::Left(i1),
+                SimGenericCollisionInfo::Two(i2) => itertools::Either::Right(i2),
+            });
+
+        for info in ones_collisions {
+            let new_snapshot = info.snaps[0].snap.advanced(info.col.impact_time, info.col.states[0].pos, info.col.states[0].vel);
+            self.snapshots.insert(&self.multiverse, new_snapshot, Some(info.snaps[0].link));
+
+            self.timelines_present.entry(new_snapshot.timeline)
+                .and_modify(|t| *t = f32::min(*t, info.col.impact_time))
+                .or_insert(info.col.impact_time);
+        }
+
+        for info in twos_collisions {
+            let link0 = info.snaps[0].link;
+            let new_snapshot1 = info.snaps[0].snap.advanced(info.col.impact_time, info.col.states[0].pos, info.col.states[0].vel);
+            let link1 = info.snaps[1].link;
+            let new_snapshot2 = info.snaps[1].snap.advanced(info.col.impact_time, info.col.states[1].pos, info.col.states[1].vel);
 
             debug_assert!(self.multiverse.is_related(new_snapshot1.timeline, new_snapshot2.timeline));
             let child_timeline = max(new_snapshot1.timeline, new_snapshot2.timeline);
 
-            if self.node_has_children(info.l1, child_timeline) || self.node_has_children(info.l2, child_timeline) {
+            if self.node_has_children(link0, child_timeline) || self.node_has_children(link1, child_timeline) {
                 todo!("Branching not yet implemented");
             }
 
-            self.snapshots.insert(&self.multiverse, new_snapshot1, Some(info.l1));
-            self.snapshots.insert(&self.multiverse, new_snapshot2, Some(info.l2));
+            self.snapshots.insert(&self.multiverse, new_snapshot1, Some(link0));
+            self.snapshots.insert(&self.multiverse, new_snapshot2, Some(link1));
 
             self.timelines_present.entry(child_timeline)
                 .and_modify(|t| *t = f32::min(*t, info.col.impact_time))
