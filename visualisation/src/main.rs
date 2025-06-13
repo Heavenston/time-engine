@@ -1,5 +1,7 @@
 mod draw_polygon;
 mod simulation_renderer;
+use std::ops::ControlFlow;
+
 use simulation_renderer::{render_simulation, RenderSimulationArgs};
 
 use time_engine as te;
@@ -46,9 +48,18 @@ async fn main() {
     };
 
     {
-        let mut ator = sim.create_simulator(10.);
-        let _ = ator.step();
+        let mut ator = sim.create_simulator(50.);
+        for i in 1..=10 {
+            println!("step #{i}");
+            if let ControlFlow::Break(reason) = ator.step() {
+                println!("Broke because {reason:?}");
+                break;
+            }
+        }
+        println!("Finished simulation");
     }
+
+    return;
 
     let mut cam_offset = Vec2::ZERO;
     let mut zoom = 1.;
