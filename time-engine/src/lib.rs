@@ -8,8 +8,6 @@ mod polygon_utils;
 pub use polygon_utils::*;
 mod timeline_id;
 pub use timeline_id::*;
-mod physics_utils;
-pub use physics_utils::*;
 mod immutable_util;
 pub(crate) use immutable_util::*;
 

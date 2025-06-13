@@ -220,7 +220,6 @@ impl<'a> Simulator<'a> {
     }
 
     fn cast_sphere_collision(&self, s1: &SimSnapshot, s2: &SimSnapshot) -> Option<SimSphereCollision> {
-        println!("{s1:#?} vs {s2:#?}");
         debug_assert_eq!(s1.time, s2.time);
         debug_assert!(self.multiverse.is_related(s1.timeline, s2.timeline));
 
@@ -258,7 +257,13 @@ impl<'a> Simulator<'a> {
         let t2 = (-b + sqrt_discriminant) / (2.0 * a);
         
         // We want the earliest positive collision time
-        let impact_time = if t1 > 0.0 { t1 } else if t2 > 0.0 { t2 } else { return None };
+        let impact_time = if t1 > 0.0 {
+            t1
+        } else if t2 > 0.0 {
+            t2
+        } else { 
+            return None 
+        };
         
         let pos1 = s1.pos + s1.vel * impact_time;
         let pos2 = s2.pos + s2.vel * impact_time;
@@ -267,11 +272,6 @@ impl<'a> Simulator<'a> {
         let collision_normal = (pos2 - pos1).normalize();
         let relative_velocity = s1.vel - s2.vel;
         let velocity_along_normal = relative_velocity.dot(collision_normal);
-        
-        // Don't resolve if velocities are separating
-        if velocity_along_normal > 0.0 {
-            return None;
-        }
         
         // Assume equal mass elastic collision
         let impulse = velocity_along_normal * collision_normal;
@@ -329,11 +329,7 @@ impl<'a> Simulator<'a> {
             .min_set_by_key(|result| OF(result.col.impact_time))
         ;
 
-        println!("{collision_infos:#?}");
-
-        if collision_infos.is_empty() {
-            self.timelines_present.remove(&timeline_id);
-        }
+        self.timelines_present.remove(&timeline_id);
 
         for info in collision_infos {
             let new_snapshot1 = info.s1.advanced(info.col.impact_time, info.col.pos1, info.col.vel1);
@@ -357,7 +353,7 @@ impl<'a> Simulator<'a> {
         ControlFlow::Continue(())
     }
 
-    pub fn run(mut self) -> SimulationResult {
+    pub fn run(mut self) {
         while self.step().is_continue() { }
     }
 }

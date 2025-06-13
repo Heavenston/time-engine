@@ -129,7 +129,7 @@ impl WorldState {
         Simulator::new(self, max_time)
     }
 
-    pub fn simulate(&self, max_time: f32) -> SimulationResult {
-        Simulator::new(self, max_time).run()
+    pub fn simulate(&self, max_time: f32) {
+        Simulator::new(self, max_time).run();
     }
 }
