@@ -373,11 +373,11 @@ impl<'a> Simulator<'a> {
         let sqrt_discriminant = discriminant.sqrt();
         let t1 = (-b - sqrt_discriminant) / (2.0 * a);
         let t2 = (-b + sqrt_discriminant) / (2.0 * a);
-        
+
         // We want the earliest positive collision time
-        let impact_dt = if t1 > parry2d::math::DEFAULT_EPSILON {
+        let impact_dt = if t1 > DEFAULT_EPSILON {
             t1
-        } else if t2 > parry2d::math::DEFAULT_EPSILON {
+        } else if t2 > DEFAULT_EPSILON {
             t2
         } else { 
             return None 
@@ -390,6 +390,11 @@ impl<'a> Simulator<'a> {
         let collision_normal = (pos2 - pos1).normalize();
         let relative_velocity = s1.vel - s2.vel;
         let velocity_along_normal = relative_velocity.dot(collision_normal);
+
+        // Don't resolve if velocities are separating
+        if velocity_along_normal < DEFAULT_EPSILON {
+            return None;
+        }
         
         // Assume equal mass elastic collision
         let impulse = velocity_along_normal * collision_normal;
@@ -403,6 +408,11 @@ impl<'a> Simulator<'a> {
                 SimSphereNewState { vel: vel2, pos: pos2 },
             ],
         })
+    }
+
+    pub fn finished(&self) -> bool {
+        self.timelines_present.values().copied()
+            .all(|t| t >= self.max_time)
     }
 
     pub fn step(&mut self) -> ControlFlow<SimStepBreakReason, ()> {
@@ -520,7 +530,7 @@ impl<'a> Simulator<'a> {
         }
     }
 
-    pub fn run(mut self) {
+    pub fn run(&mut self) {
         while self.step().is_continue() { }
     }
 }

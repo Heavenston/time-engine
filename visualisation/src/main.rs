@@ -5,7 +5,7 @@ use std::ops::ControlFlow;
 use simulation_renderer::{render_simulation, RenderSimulationArgs};
 
 use time_engine as te;
-use macroquad::{ prelude::{scene::clear, *}, ui::{ self, root_ui } };
+use macroquad::{ prelude::*, ui::{ self, root_ui } };
 
 const CAMERA_ZOOM_SPEED: f32 = 1.25;
 
@@ -60,7 +60,6 @@ async fn main() {
     let mut zoom = 1.;
     let mut enable_debug_rendering = false;
     let mut is_paused = false;
-    let mut is_finished_simulation = false;
     let mut time = 0.;
 
     let mouse_pos = |camera: &Camera2D| {
@@ -100,6 +99,7 @@ async fn main() {
         if is_key_pressed(KeyCode::R) {
             cam_offset = Vec2::ZERO;
             zoom = 1.;
+            time = 0.;
         }
 
         if is_key_pressed(KeyCode::D) {
@@ -147,11 +147,11 @@ async fn main() {
 
         let (min_time, max_time) = simulator.minmax_time();
 
-        if time < min_time || time > simulator.max_time() {
+        if time < min_time || time >= simulator.max_time() {
             time = min_time;
         }
-        else if time > max_time {
-            if is_finished_simulation {
+        else if time >= max_time {
+            if simulator.finished() {
                 time = min_time;
             }
             else {
@@ -159,7 +159,6 @@ async fn main() {
                 println!("Step #{step_count}");
                 if let ControlFlow::Break(reason) = simulator.step() {
                     println!("Finished simulation: {reason:?}");
-                    is_finished_simulation = true;
                     simulator.extrapolate_to(simulator.max_time());
                 }
                 else {
@@ -178,6 +177,8 @@ async fn main() {
         root_ui().label(None, &format!("fps: {}", get_fps()));
         root_ui().label(None, &format!("time: {time:.02}s/{:.02}s", simulator.max_time()));
         root_ui().label(None, &format!("steps: {step_count}"));
+        root_ui().label(None, &format!("finished: {}", simulator.finished()));
+        root_ui().label(None, &format!("From {min_time}s to {max_time}s"));
 
         // Draw timeline controls
         set_default_camera();
