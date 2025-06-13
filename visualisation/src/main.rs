@@ -20,18 +20,18 @@ fn window_conf() -> Conf {
 async fn main() {
     let sim = {
         let mut sim = te::WorldState::new(100., 100.);
-        // sim.push_portal(te::Portal {
-        //     height: 20.,
-        //     in_transform: Affine2::from_angle_translation(
-        //         std::f32::consts::PI,
-        //         Vec2::new(85., 50.),
-        //     ),
-        //     out_transform: Affine2::from_angle_translation(
-        //         std::f32::consts::FRAC_PI_2,
-        //         Vec2::new(50., 85.),
-        //     ),
-        //     time_offset: -2.3,
-        // });
+        sim.push_portal(te::Portal {
+            height: 20.,
+            in_transform: Affine2::from_angle_translation(
+                std::f32::consts::PI,
+                Vec2::new(85., 50.),
+            ),
+            out_transform: Affine2::from_angle_translation(
+                std::f32::consts::FRAC_PI_2,
+                Vec2::new(50., 85.),
+            ),
+            time_offset: 0.,
+        });
         sim.push_sphere(te::Sphere {
             initial_pos: glam::Vec2::new(10., 50.),
             initial_velocity: glam::Vec2::new(30., 0.),

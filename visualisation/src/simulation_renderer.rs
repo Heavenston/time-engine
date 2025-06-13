@@ -24,21 +24,11 @@ pub fn render_simulation(
     draw_rectangle_lines(-2.5, -2.5, world_state.width() + 5., world_state.height() + 5., 5., WHITE);
 
     // Draw spheres
-    // for &te::Sphere { initial_pos: pos, initial_velocity: vel, radius: rad, .. } in world_state.spheres().iter() {
-    //     let sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
-
-    //     draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE);
-
-    //     if enable_debug_rendering {
-    //         // draw a velocity line
-    //         draw_line(pos.x, pos.y, pos.x + vel.x, pos.y + vel.y, 0.5, ORANGE.with_alpha(0.25));
-    //     }
-    // }
     for link in simulator.time_query(Some(time)) {
-        let snapshot = &simulator.snapshots()[link].extrapolate(time);
-        let pos = snapshot.pos;
-        let vel = snapshot.vel;
-        let rad = snapshot.radius;
+        let te::SimSnapshot {
+            pos, vel, radius: rad,
+            ..
+        } = simulator.snapshots()[link].extrapolate(time);
 
         let sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
 
@@ -51,19 +41,23 @@ pub fn render_simulation(
     }
 
     // Draw portals
-    for portal in world_state.portals() {
-        // TODO
-        // let h2 = portal.height / 2.;
-        // let middle = portal.initial_transform.transform_point2(Vec2::new(0., 0.));
-        // let start = portal.initial_transform.transform_point2(Vec2::new(0., -h2));
-        // let end = portal.initial_transform.transform_point2(Vec2::new(0., h2));
-        // if enable_debug_rendering {
-        //     let normal = portal.initial_transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
-        //     // draw the normal arrow
-        //     draw_line(middle.x, middle.y, middle.x + normal.x, middle.y + normal.y, 0.5, GREEN.with_alpha(0.25));
-        // }
-        // // draw the actual portal surface
-        // draw_line(start.x, start.y, end.x, end.y, 1., GREEN);
+    for (height, transform) in world_state.portals().iter()
+        .flat_map(|portal| [
+            (portal.height, portal.in_transform),
+            (portal.height, portal.out_transform),
+        ])
+    {
+        let h2 = height / 2.;
+        let middle = transform.transform_point2(Vec2::new(0., 0.));
+        let start = transform.transform_point2(Vec2::new(0., -h2));
+        let end = transform.transform_point2(Vec2::new(0., h2));
+        if enable_debug_rendering {
+            let normal = transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
+            // draw the normal arrow
+            draw_line(middle.x, middle.y, middle.x + normal.x, middle.y + normal.y, 0.5, GREEN.with_alpha(0.25));
+        }
+        // draw the actual portal surface
+        draw_line(start.x, start.y, end.x, end.y, 1., GREEN);
     }
 
     // Draw the world's static body collision
