@@ -120,6 +120,27 @@ impl<'a> Simulator<'a> {
         }
     }
 
+    pub fn snapshots(&self) -> &SimSnapshotContainer {
+        &self.snapshots
+    }
+
+    pub fn multiverse(&self) -> &TimelineMultiverse {
+        &self.multiverse
+    }
+
+    // TODO: Find another name
+    pub fn max_time(&self) -> f32 {
+        self.max_time
+    }
+
+    pub fn minmax_time(&self) -> (f32, f32) {
+        self.snapshots.nodes()
+            .map(|(_, node)| node.snapshot.time)
+            .minmax_by_key(|&t| OF(t))
+            .into_option()
+            .unwrap_or((0., 0.))
+    }
+
     fn interpolate_snapshot_to(&self, time: f32, snap: &SimSnapshot) -> SimSnapshot {
         assert!(time >= snap.time);
         let dt = time - snap.time;
@@ -142,9 +163,34 @@ impl<'a> Simulator<'a> {
             .any(|&child_link| self.multiverse.is_parent(self.snapshots[child_link].timeline, timeline_id))
     }
 
+    pub fn time_query(&self, time: Option<f32>) -> Vec<SimSnapshotLink> {
+        debug_assert!(self.starts.iter().copied().all_unique());
+        let mut result = Vec::new();
+
+        for (link, node) in self.snapshots.nodes() {
+            let should_take = time.is_none_or(|time| {
+                if node.snapshot.time > time {
+                    return false;
+                }
+                let min_time = node.age_children.iter()
+                    .map(|&link| self.snapshots[link].time)
+                    .reduce(f32::min)
+                    // if the minimum children type 
+                    .map(|min_t| min_t.max(node.snapshot.time));
+                min_time.is_none_or(|min_time| min_time > time)
+            });
+
+            if should_take {
+                result.push(link);
+            }
+        }
+
+        result
+    }
+
     /// Giving None as the time returns all nodes with no children on the given timeline
     /// Giving Some returns all nodes that covers the given time
-    fn timeline_query(&self, time: Option<f32>, timeline_id: TimelineId) -> Vec<SimSnapshotLink> {
+    pub fn timeline_query(&self, time: Option<f32>, timeline_id: TimelineId) -> Vec<SimSnapshotLink> {
         debug_assert!(self.starts.iter().copied().all_unique());
 
         #[derive(Debug, Clone, Copy)]
@@ -351,6 +397,22 @@ impl<'a> Simulator<'a> {
         }
 
         ControlFlow::Continue(())
+    }
+
+    pub fn extrapolate_to(&mut self, to: f32) {
+        // gathering the list of snapshots that need extrapolating
+        // have to collect_vec for the borrow checker
+        let to_extrapolate = self.snapshots
+            .nodes()
+            .filter(|(_, node)| node.snapshot.time < to)
+            .filter(|(_, node)| node.age_children.is_empty())
+            .map(|(link, _)| link)
+            .collect_vec();
+        for link in to_extrapolate {
+            let snap = self.snapshots[link];
+            let new_snap = snap.extrapolate(to);
+            self.snapshots.insert(&self.multiverse, new_snap, Some(link));
+        }
     }
 
     pub fn run(mut self) {

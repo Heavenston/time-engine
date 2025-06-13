@@ -34,6 +34,11 @@ impl SimSnapshot {
             ..self
         }
     }
+
+    pub fn extrapolate(self, new_time: f32) -> Self {
+        let dt = new_time - self.time;
+        self.advanced(new_time, self.pos + self.vel * dt, self.vel)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -124,6 +129,18 @@ impl SimSnapshotContainer {
     /// Starts with the given node itself
     pub fn iter_ancestry<'a>(&'a self, link: SimSnapshotLink) -> AncestryIterator<'a> {
         AncestryIterator::new(self, Some(link))
+    }
+
+    pub fn nodes(&'_ self) -> impl Iterator<Item = (SimSnapshotLink, &'_ SimSnapshotNode)> {
+        self.nodes.iter()
+            .enumerate()
+            .map(|(idx, node)| (SimSnapshotLink { idx }, node))
+    }
+
+    pub fn nodes_mut(&'_ mut self) -> impl Iterator<Item = (SimSnapshotLink, &'_ mut SimSnapshotNode)> {
+        self.nodes.iter_mut()
+            .enumerate()
+            .map(|(idx, node)| (SimSnapshotLink { idx }, node))
     }
 }
 

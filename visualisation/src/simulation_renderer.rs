@@ -1,17 +1,21 @@
 use macroquad::prelude::*;
 use i_overlay::i_shape::base::data::Shapes;
-use time_engine as te;
+use time_engine::{self as te, Simulator};
 use crate::draw_polygon::draw_shapes;
 
 pub struct RenderSimulationArgs<'a> {
     pub world_state: &'a te::WorldState,
     pub enable_debug_rendering: bool,
+    pub time: f32,
+    pub simulator: &'a Simulator<'a>,
 }
 
 pub fn render_simulation(
     RenderSimulationArgs {
         world_state,
         enable_debug_rendering,
+        time,
+        simulator,
     }: RenderSimulationArgs<'_>
 ) {
     clear_background(BLACK);
@@ -20,7 +24,22 @@ pub fn render_simulation(
     draw_rectangle_lines(-2.5, -2.5, world_state.width() + 5., world_state.height() + 5., 5., WHITE);
 
     // Draw spheres
-    for &te::Sphere { initial_pos: pos, initial_velocity: vel, radius: rad, .. } in world_state.spheres().iter() {
+    // for &te::Sphere { initial_pos: pos, initial_velocity: vel, radius: rad, .. } in world_state.spheres().iter() {
+    //     let sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
+
+    //     draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE);
+
+    //     if enable_debug_rendering {
+    //         // draw a velocity line
+    //         draw_line(pos.x, pos.y, pos.x + vel.x, pos.y + vel.y, 0.5, ORANGE.with_alpha(0.25));
+    //     }
+    // }
+    for link in simulator.time_query(Some(time)) {
+        let snapshot = &simulator.snapshots()[link].extrapolate(time);
+        let pos = snapshot.pos;
+        let vel = snapshot.vel;
+        let rad = snapshot.radius;
+
         let sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
 
         draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE);

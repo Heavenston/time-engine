@@ -5,7 +5,7 @@ use std::ops::ControlFlow;
 use simulation_renderer::{render_simulation, RenderSimulationArgs};
 
 use time_engine as te;
-use macroquad::{ prelude::*, ui::{ self, root_ui } };
+use macroquad::{ prelude::{scene::clear, *}, ui::{ self, root_ui } };
 
 const CAMERA_ZOOM_SPEED: f32 = 1.25;
 
@@ -47,23 +47,15 @@ async fn main() {
         sim
     };
 
-    {
-        let mut ator = sim.create_simulator(50.);
-        for i in 1..=10 {
-            println!("step #{i}");
-            if let ControlFlow::Break(reason) = ator.step() {
-                println!("Broke because {reason:?}");
-                break;
-            }
-        }
-        println!("Finished simulation");
-    }
-
-    return;
+    let mut simulator = sim.create_simulator(3.);
+    let mut step_count = 0;
 
     let mut cam_offset = Vec2::ZERO;
     let mut zoom = 1.;
     let mut enable_debug_rendering = false;
+    let mut is_paused = false;
+    let mut is_finished_simulation = false;
+    let mut time = 0.;
 
     let mouse_pos = |camera: &Camera2D| {
         camera.screen_to_world(Vec2::new(mouse_position().0, mouse_position().1))
@@ -108,6 +100,10 @@ async fn main() {
             enable_debug_rendering = !enable_debug_rendering;
         }
 
+        if is_key_pressed(KeyCode::Space) {
+            is_paused = !is_paused;
+        }
+
         camera.target = cam_offset + cam_centering_offset;
         camera.zoom = cam_centering_zoom * zoom;
 
@@ -138,12 +134,44 @@ async fn main() {
         set_camera(&camera);
 
         // Render simulation
+
+        if !is_paused {
+            time += get_frame_time();
+        }
+
+        let (min_time, max_time) = simulator.minmax_time();
+
+        if time < min_time || time > simulator.max_time() {
+            time = min_time;
+        }
+        else if time > max_time {
+            if is_finished_simulation {
+                time = min_time;
+            }
+            else {
+                step_count += 1;
+                println!("Step #{step_count}");
+                if let ControlFlow::Break(reason) = simulator.step() {
+                    println!("Finished simulation: {reason:?}");
+                    is_finished_simulation = true;
+                    simulator.extrapolate_to(simulator.max_time());
+                }
+                else {
+                    clear();
+                    continue;
+                }
+            }
+        }
+        
         render_simulation(RenderSimulationArgs {
             world_state: &sim,
             enable_debug_rendering,
+            time,
+            simulator: &simulator,
         });
 
         root_ui().label(None, &format!("fps: {}", get_fps()));
+        root_ui().label(None, &format!("time: {time:.02}s/{:.02}s", simulator.max_time()));
 
         // Draw timeline controls
         set_default_camera();
