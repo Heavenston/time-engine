@@ -125,7 +125,11 @@ impl WorldState {
         shapes
     }
 
-    pub fn simulate(&self) -> SimulationResult {
-        Simulator::new(self).run()
+    pub fn create_simulator(&'_ self, max_time: f32) -> Simulator<'_> {
+        Simulator::new(self, max_time)
+    }
+
+    pub fn simulate(&self, max_time: f32) -> SimulationResult {
+        Simulator::new(self, max_time).run()
     }
 }

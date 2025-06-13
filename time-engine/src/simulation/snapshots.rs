@@ -3,6 +3,7 @@ use super::*;
 use std::ops::{Index, IndexMut};
 
 use glam::Vec2;
+use itertools::Itertools;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SimSnapshot {
@@ -19,6 +20,20 @@ pub struct SimSnapshot {
     pub age: f32,
     pub pos: Vec2,
     pub vel: Vec2,
+}
+
+impl SimSnapshot {
+    pub fn advanced(self, new_time: f32, new_pos: Vec2, new_vel: Vec2) -> Self {
+        assert!(self.time <= new_time);
+        let dt = new_time - self.time;
+        Self {
+            time: new_time,
+            age: self.age + dt,
+            pos: new_pos,
+            vel: new_vel,
+            ..self
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -47,26 +62,26 @@ impl From<SimSnapshot> for SimSnapshotNode {
 
 #[derive(Debug, Clone)]
 pub struct SimSnapshotContainer {
-    snapshots: Vec<SimSnapshotNode>,
+    nodes: Vec<SimSnapshotNode>,
 }
 
 impl SimSnapshotContainer {
     pub fn new() -> Self {
         Self {
-            snapshots: default(),
+            nodes: default(),
         }
     }
 
     pub fn get_node(&self, link: SimSnapshotLink) -> Option<&SimSnapshotNode> {
-        self.snapshots.get(link.idx)
+        self.nodes.get(link.idx)
     }
 
     pub fn get(&self, link: SimSnapshotLink) -> Option<&SimSnapshot> {
-        self.snapshots.get(link.idx).map(|node| &node.snapshot)
+        self.nodes.get(link.idx).map(|node| &node.snapshot)
     }
 
     pub fn get_mut(&mut self, link: SimSnapshotLink) -> Option<&mut SimSnapshot> {
-        self.snapshots.get_mut(link.idx).map(|node| &mut node.snapshot)
+        self.nodes.get_mut(link.idx).map(|node| &mut node.snapshot)
     }
 
     pub fn age_previous(&self, link: SimSnapshotLink) -> Option<SimSnapshotLink> {
@@ -79,20 +94,26 @@ impl SimSnapshotContainer {
             .unwrap_or(&[])
     }
 
-    pub fn insert(&mut self, multiverse: &TimelineMultiverse, node: SimSnapshot, age_previous: Option<SimSnapshotLink>) -> SimSnapshotLink {
-        let link = SimSnapshotLink { idx: self.snapshots.len() };
+    pub fn insert(&mut self, multiverse: &TimelineMultiverse, snapshot: SimSnapshot, age_previous: Option<SimSnapshotLink>) -> SimSnapshotLink {
+        let link = SimSnapshotLink { idx: self.nodes.len() };
 
-        self.snapshots.push(SimSnapshotNode {
+        self.nodes.push(SimSnapshotNode {
             age_previous,
-            ..SimSnapshotNode::from(node)
+            ..SimSnapshotNode::from(snapshot)
         });
 
         if let Some(age_previous) = age_previous {
-            let age_parent = &mut self.snapshots[age_previous.idx];
-            debug_assert_eq!(age_parent.snapshot.original_idx, node.original_idx);
-            let distance = multiverse.distance(age_parent.snapshot.timeline, node.timeline);
+            let age_parent = &mut self.nodes[age_previous.idx];
+            debug_assert_eq!(age_parent.snapshot.original_idx, snapshot.original_idx);
+            let distance = multiverse.distance(age_parent.snapshot.timeline, snapshot.timeline);
             debug_assert!(distance == Some(0) || distance == Some(1));
-            self.snapshots[age_previous.idx].age_children.push(link);
+            self.nodes[age_previous.idx].age_children.push(link);
+            debug_assert!(
+                self.nodes[age_previous.idx].age_children.iter()
+                    .map(|&child_link| self[child_link].timeline)
+                    .all_unique(),
+                "Cannot branch multiple time for the same timeline!"
+            );
         }
 
         link
@@ -110,13 +131,13 @@ impl Index<SimSnapshotLink> for SimSnapshotContainer {
     type Output = SimSnapshot;
 
     fn index(&self, index: SimSnapshotLink) -> &Self::Output {
-        &self.snapshots[index.idx].snapshot
+        &self.nodes[index.idx].snapshot
     }
 }
 
 impl IndexMut<SimSnapshotLink> for SimSnapshotContainer {
     fn index_mut(&mut self, index: SimSnapshotLink) -> &mut Self::Output {
-        &mut self.snapshots[index.idx].snapshot
+        &mut self.nodes[index.idx].snapshot
     }
 }
 
