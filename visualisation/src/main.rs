@@ -61,6 +61,7 @@ async fn main() {
     let mut enable_debug_rendering = false;
     let mut is_paused = false;
     let mut time = 0.;
+    let mut speed = 1.;
 
     let mouse_pos = |camera: &Camera2D| {
         camera.screen_to_world(Vec2::new(mouse_position().0, mouse_position().1))
@@ -80,6 +81,28 @@ async fn main() {
     }
 
     loop {
+        // Forward simulation
+        let (min_time, max_time) = simulator.minmax_time();
+
+        if !is_paused && time <= max_time {
+            time += get_frame_time() * speed;
+        }
+
+        if time < min_time || time > simulator.max_time() {
+            time = min_time;
+        }
+        else if time > max_time {
+            if simulator.finished() {
+                time = min_time;
+            }
+            else {
+                step_count += 1;
+                if simulator.step().is_break() {
+                    simulator.extrapolate_to(simulator.max_time());
+                }
+            }
+        }
+
         // Setup camera
         let (cw, ch) = if screen_width() > screen_height() {
             ((screen_width() / screen_height()) * sim.height(), sim.height())
@@ -96,30 +119,92 @@ async fn main() {
         let cam_centering_offset = camera.target;
 
         // Handle inputs
-        if is_key_pressed(KeyCode::R) {
-            cam_offset = Vec2::ZERO;
-            zoom = 1.;
-            time = 0.;
-        }
 
-        if is_key_pressed(KeyCode::D) {
-            enable_debug_rendering = !enable_debug_rendering;
-        }
+        let mut captured_pointer = false;
+        let mut captured_keyboard = false;
+        egui_macroquad::ui(|ctx| {
+            let mut style = (*ctx.style()).clone();
+            style.visuals.override_text_color = Some(egui::Color32::WHITE);
+            // style.text_styles.get_mut(&egui::TextStyle::Body).expect("present").size = 16.;
+            ctx.set_style(style);
 
-        if is_key_pressed(KeyCode::Space) {
-            is_paused = !is_paused;
+            egui::Window::new("Informations")
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("FPS:");
+                        ui.colored_label(egui::Color32::GRAY, format!("{}", get_fps()));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Total Simulation Steps:");
+                        ui.colored_label(egui::Color32::GRAY, format!("{step_count}"));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Finished simulating:");
+                        if simulator.finished() {
+                            ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
+                        }
+                        else {
+                            ui.colored_label(egui::Color32::LIGHT_RED, "No");
+                        }
+                    });
+                });
+
+            egui::Window::new("Controls")
+                .show(ctx, |ui| {
+                    let progress = max_time / simulator.max_time();
+                    if progress < 1. {
+                        ui.add(egui::ProgressBar::new(max_time / simulator.max_time()));
+                    }
+
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Slider::new(&mut time, 0. ..=simulator.max_time())
+                            .suffix("s")
+                            .fixed_decimals(2)
+                        );
+                        if ui.button(if is_paused { "Resume" } else { "Pause" }).clicked() {
+                            is_paused = !is_paused;
+                        }
+                    });
+
+                    ui.add(egui::Slider::new(&mut speed, 0.1 ..= 10.)
+                        .prefix("x")
+                        .logarithmic(true)
+                        .clamping(egui::SliderClamping::Never)
+                        .text("Speed"));
+                });
+
+            captured_pointer = ctx.wants_pointer_input();
+            captured_keyboard = ctx.wants_keyboard_input();
+        });
+
+        if !captured_keyboard {
+            if is_key_pressed(KeyCode::R) {
+                cam_offset = Vec2::ZERO;
+                zoom = 1.;
+                time = 0.;
+            }
+
+            if is_key_pressed(KeyCode::D) {
+                enable_debug_rendering = !enable_debug_rendering;
+            }
+
+            if is_key_pressed(KeyCode::Space) {
+                is_paused = !is_paused;
+            }
         }
 
         camera.target = cam_offset + cam_centering_offset;
         camera.zoom = cam_centering_zoom * zoom;
 
-        if is_mouse_button_down(MouseButton::Left) {
-            cam_offset += mouse_delta_position() / camera.zoom;
+        if !captured_pointer {
+            if is_mouse_button_down(MouseButton::Left) {
+                cam_offset += mouse_delta_position() / camera.zoom;
+            }
         }
 
         camera.target = cam_offset + cam_centering_offset;
 
-        {
+        if !captured_pointer {
             let scroll = mouse_wheel().1;
             if scroll != 0. {
                 let mouse_world_before = mouse_pos(&camera);
@@ -140,33 +225,6 @@ async fn main() {
         set_camera(&camera);
 
         // Render simulation
-
-        if !is_paused {
-            time += get_frame_time();
-        }
-
-        let (min_time, max_time) = simulator.minmax_time();
-
-        if time < min_time || time >= simulator.max_time() {
-            time = min_time;
-        }
-        else if time >= max_time {
-            if simulator.finished() {
-                time = min_time;
-            }
-            else {
-                step_count += 1;
-                println!("Step #{step_count}");
-                if let ControlFlow::Break(reason) = simulator.step() {
-                    println!("Finished simulation: {reason:?}");
-                    simulator.extrapolate_to(simulator.max_time());
-                }
-                else {
-                    time = time.min(simulator.minmax_time().1);
-                }
-            }
-        }
-        
         render_simulation(RenderSimulationArgs {
             world_state: &sim,
             enable_debug_rendering,
@@ -174,14 +232,8 @@ async fn main() {
             simulator: &simulator,
         });
 
-        root_ui().label(None, &format!("fps: {}", get_fps()));
-        root_ui().label(None, &format!("time: {time:.02}s/{:.02}s", simulator.max_time()));
-        root_ui().label(None, &format!("steps: {step_count}"));
-        root_ui().label(None, &format!("finished: {}", simulator.finished()));
-        root_ui().label(None, &format!("From {min_time}s to {max_time}s"));
-
-        // Draw timeline controls
-        set_default_camera();
+        // render ui
+        egui_macroquad::draw();
 
         next_frame().await;
     }

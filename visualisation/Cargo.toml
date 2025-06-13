@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+egui = "0.31.1"
+egui-macroquad = "0.17.3"
 i_overlay = { version = "4.0.2", features = ["glam"] }
 i_triangle = { version = "0.35.0", features = ["glam"] }
 itertools = "0.14.0"
