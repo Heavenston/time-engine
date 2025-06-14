@@ -29,20 +29,20 @@ async fn main() {
                 std::f32::consts::FRAC_PI_2,
                 Vec2::new(50., 90.),
             ),
-            time_offset: 80./30.,
+            time_offset: 2.5,
         });
-        // sim.push_sphere(te::Sphere {
-        //     initial_pos: glam::Vec2::new(10., 50.),
-        //     initial_velocity: glam::Vec2::new(30., 0.),
-        //     radius: 3.,
-        //     ..Default::default()
-        // });
-        // sim.push_sphere(te::Sphere {
-        //     initial_pos: glam::Vec2::new(50., 50.),
-        //     initial_velocity: glam::Vec2::new(-30., 0.),
-        //     radius: 3.,
-        //     ..Default::default()
-        // });
+        sim.push_sphere(te::Sphere {
+            initial_pos: glam::Vec2::new(10., 50.),
+            initial_velocity: glam::Vec2::new(30., 0.),
+            radius: 3.,
+            ..Default::default()
+        });
+        sim.push_sphere(te::Sphere {
+            initial_pos: glam::Vec2::new(50., 50.),
+            initial_velocity: glam::Vec2::new(-30., 0.),
+            radius: 3.,
+            ..Default::default()
+        });
         sim.push_sphere(te::Sphere {
             initial_pos: glam::Vec2::new(50., 30.), 
             initial_velocity: glam::Vec2::new(0., 30.),
@@ -87,12 +87,17 @@ async fn main() {
             time += get_frame_time() * speed;
         }
 
-        if time < min_time || time > simulator.max_time() {
+        if time < min_time {
             time = min_time;
+        }
+        else if time > simulator.max_time() {
+            time = simulator.max_time();
+            is_paused = true;
         }
         else if time > max_time {
             if simulator.finished() {
-                time = min_time;
+                time = max_time;
+                is_paused = true;
             }
             else {
                 step_count += 1;
@@ -144,6 +149,10 @@ async fn main() {
                         ui.colored_label(egui::Color32::GRAY, format!("{max_time}"));
                     });
                     ui.horizontal(|ui| {
+                        ui.label("Number of timelines:");
+                        ui.colored_label(egui::Color32::GRAY, format!("{}", simulator.multiverse().len()));
+                    });
+                    ui.horizontal(|ui| {
                         ui.label("Finished simulating:");
                         if simulator.finished() {
                             ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
@@ -162,11 +171,14 @@ async fn main() {
                     }
 
                     ui.horizontal(|ui| {
-                        ui.add(egui::Slider::new(&mut time, 0. ..=simulator.max_time())
+                        ui.add(egui::Slider::new(&mut time, min_time..=simulator.max_time())
                             .suffix("s")
                         );
                         if ui.button(if is_paused { "Resume" } else { "Pause" }).clicked() {
                             is_paused = !is_paused;
+                            if time >= simulator.max_time() {
+                                time = min_time;
+                            }
                         }
                     });
 
@@ -194,6 +206,9 @@ async fn main() {
 
             if is_key_pressed(KeyCode::Space) {
                 is_paused = !is_paused;
+                if time >= simulator.max_time() {
+                    time = min_time;
+                }
             }
         }
 

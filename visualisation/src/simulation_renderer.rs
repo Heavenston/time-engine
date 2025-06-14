@@ -10,6 +10,22 @@ pub struct RenderSimulationArgs<'a> {
     pub simulator: &'a Simulator<'a>,
 }
 
+const BALL_COLORS: [Color; 10] = [
+    // 1) Pure white
+    Color::new(1.0, 1.0, 1.0, 1.0),
+
+    // Slightly more saturated “pastel” hues for contrast on black
+    Color::new(1.0, 0.4, 0.4, 1.0), // red
+    Color::new(1.0, 0.7, 0.4, 1.0), // orange
+    Color::new(1.0, 1.0, 0.4, 1.0), // yellow
+    Color::new(0.4, 1.0, 0.4, 1.0), // green
+    Color::new(0.4, 1.0, 0.7, 1.0), // mint
+    Color::new(0.4, 1.0, 1.0, 1.0), // cyan
+    Color::new(0.4, 0.7, 1.0, 1.0), // sky blue
+    Color::new(0.7, 0.4, 1.0, 1.0), // lavender
+    Color::new(1.0, 0.4, 1.0, 1.0), // magenta
+];
+
 pub fn render_simulation(
     RenderSimulationArgs {
         world_state,
@@ -51,6 +67,18 @@ pub fn render_simulation(
             draw_line(pos.x, pos.y, pos.x + vel.x, pos.y + vel.y, 0.5, ORANGE.with_alpha(0.25));
 
             let mut previous_shape = sphere_shapes.clone();
+            // rendering timeline color
+            if true {
+                let color = BALL_COLORS[snap.timeline_id.to_usize() % (BALL_COLORS.len() - 1) + 1];
+                let outline = previous_shape.outline(&i_overlay::mesh::style::OutlineStyle {
+                    outer_offset: 0.5,
+                    inner_offset: 0.,
+                    join: i_overlay::mesh::style::LineJoin::Bevel,
+                });
+                let outline2 = outline.overlay(&previous_shape, OverlayRule::Difference, FillRule::EvenOdd);
+                previous_shape = outline;
+                draw_shapes(Vec2::ZERO, &outline2, color.with_alpha(0.9));
+            }
             if is_generated_ghost {
                 let outline = previous_shape.outline(&i_overlay::mesh::style::OutlineStyle {
                     outer_offset: 0.5,
@@ -83,9 +111,14 @@ pub fn render_simulation(
             }
 
             draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE.with_alpha(0.5));
-        }
 
-        draw_shapes(Vec2::ZERO, &cliped_sphere_shapes, WHITE);
+            let color = BALL_COLORS[snap.original_idx % BALL_COLORS.len()];
+            draw_shapes(Vec2::ZERO, &cliped_sphere_shapes, color.with_alpha(0.5));
+        }
+        else {
+            let color = BALL_COLORS[snap.original_idx % BALL_COLORS.len()];
+            draw_shapes(Vec2::ZERO, &cliped_sphere_shapes, color);
+        }
     }
 
     // Draw portals

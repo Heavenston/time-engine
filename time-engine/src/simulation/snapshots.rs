@@ -132,6 +132,13 @@ impl SimSnapshot {
         }
     }
 
+    pub fn replace_timeline(self, new_timeline_id: TimelineId) -> Self {
+        Self {
+            timeline_id: new_timeline_id,
+            ..self
+        }
+    }
+
     /// Returns true if this snapshot is behind a portal
     /// in other words if this snapshot is coming -out of the portals listend
     /// in portal_traversal

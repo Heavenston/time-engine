@@ -3,13 +3,11 @@ use parking_lot::RwLock;
 #[derive(Debug, Clone, Copy)]
 pub struct TimelineId {
     idx: usize,
-    start: f32,
 }
 
 impl TimelineId {
-    /// This timelines has no nodes before this time
-    pub fn start(&self) -> f32 {
-        self.start
+    pub fn to_usize(&self) -> usize {
+        self.idx
     }
 }
 
@@ -49,7 +47,6 @@ impl std::hash::Hash for TimelineId {
 pub struct TimelineMultiverse {
     /// For timelines with idx > 0, timeline_parents[idx-1] gives its parent
     timeline_parents: RwLock<Vec<usize>>,
-    timeline_starts: RwLock<Vec<f32>>,
 }
 
 impl TimelineMultiverse {
@@ -60,14 +57,12 @@ impl TimelineMultiverse {
     pub fn root(&self) -> TimelineId {
         TimelineId {
             idx: 0,
-            start: 0.,
         }
     }
 
     fn timeline_from_idx(&self, idx: usize) -> TimelineId {
         TimelineId {
             idx,
-            start: if idx == 0 { 0. } else { self.timeline_starts.read()[idx - 1] },
         }
     }
 
@@ -90,11 +85,10 @@ impl TimelineMultiverse {
         self.try_parent_of(of).unwrap_or(of)
     }
 
-    pub fn create_children(&self, of: TimelineId, start: f32) -> TimelineId {
+    pub fn create_children(&self, of: TimelineId) -> TimelineId {
         let mut parents = self.timeline_parents.write();
         parents.push(of.idx);
-        self.timeline_starts.write().push(start);
-        TimelineId { idx: parents.len(), start }
+        TimelineId { idx: parents.len() }
     }
 
     /// Return how many generations separate the child from the parent
@@ -122,5 +116,9 @@ impl TimelineMultiverse {
 
     pub fn is_related(&self, lhs: TimelineId, rhs: TimelineId) -> bool {
         self.distance(lhs, rhs).is_some()
+    }
+
+    pub fn len(&self) -> usize {
+        self.timeline_parents.read().len() + 1
     }
 }

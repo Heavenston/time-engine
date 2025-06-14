@@ -32,6 +32,7 @@ struct SimSphereNewState {
 
 #[derive(Debug, Clone, Copy)]
 struct SimSphereCollision<const N: usize> {
+    debug_reason: &'static str,
     impact_time: f32,
     states: [SimSphereNewState; N],
 }
@@ -249,7 +250,7 @@ impl<'a> Simulator<'a> {
         else { return false; };
 
         node.age_children.iter()
-            .any(|&child_link| self.multiverse.is_parent(self.snapshots[child_link].timeline_id, timeline_id))
+            .any(|&child_link| self.multiverse.is_related(self.snapshots[child_link].timeline_id, timeline_id))
     }
 
     fn get_node_time_ranges<'b>(&'b self, link: SimSnapshotLink, timeline_id: Option<TimelineId>) -> (SimTimeRange, impl Iterator<Item = SimTimeRange> + 'b) {
@@ -400,6 +401,7 @@ impl<'a> Simulator<'a> {
         let new_pos = snap.pos + snap.vel * impact_dt;
 
         Some(SimSphereCollision {
+            debug_reason: "sphere-wall",
             impact_time,
             states: [SimSphereNewState { vel: new_vel, pos: new_pos, ..default() }]
         })
@@ -472,6 +474,7 @@ impl<'a> Simulator<'a> {
         let vel2 = s2.vel + impulse;
         
         Some(SimSphereCollision {
+            debug_reason: "sphere-sphere",
             impact_time: s1.time + impact_dt,
             states: [
                 SimSphereNewState { vel: vel1, pos: pos1, ..default() },
@@ -528,6 +531,7 @@ impl<'a> Simulator<'a> {
         };
 
         Some(SimSphereCollision {
+            debug_reason: "sphere-portal-start",
             impact_time,
             states: [SimSphereNewState {
                 vel, pos,
@@ -562,6 +566,7 @@ impl<'a> Simulator<'a> {
         let traveled_vel = portal_out.transform.transform_vector2(rel_vel);
 
         Some(SimSphereCollision {
+            debug_reason: "sphere-portal-end",
             impact_time,
             states: [SimSphereNewState {
                 vel: traveled_vel, pos: traveled_pos,
@@ -580,8 +585,6 @@ impl<'a> Simulator<'a> {
         let Some((&timeline_id, &time)) = self.timelines_present.iter()
             .min_by_key(|&(_, &t)| OF(t))
         else { return ControlFlow::Break(SimStepBreakReason::Finished) };
-
-        println!("{} - {}", timeline_id, time);
 
         if time >= self.max_time {
             return ControlFlow::Break(SimStepBreakReason::Finished);
@@ -630,8 +633,9 @@ impl<'a> Simulator<'a> {
                 )
             )
             .chain(
-                new_snapshots.iter().map(|(l, s)| (*l, s))
-                .cartesian_product(snapshots.iter().map(|(l, s)| (*l, s)))
+                snapshots.iter().map(|(l, s)| (*l, s))
+                .tuple_combinations::<(_, _)>()
+                .filter(|&((l1, _), (l2, _))| !self.node_has_children(l1, timeline_id) || !self.node_has_children(l2, timeline_id))
                 .filter_map(|((l1, s1), (l2, s2))| self.cast_sphere_sphere_collision(s1, s2)
                     .map(|col| SimCollisionInfo {
                         col,
@@ -701,23 +705,34 @@ impl<'a> Simulator<'a> {
 
         for info in twos_collisions {
             let link0 = info.snaps[0].link;
-            let new_snapshot1 = info.snaps[0].snap.advanced(info.col.impact_time, info.col.states[0].pos, info.col.states[0].vel)
-                .with_portal_traversals(info.col.states[0].portal_traversals)
-                .offset_time(info.col.states[0].time_offset);
             let link1 = info.snaps[1].link;
-            let new_snapshot2 = info.snaps[1].snap.advanced(info.col.impact_time, info.col.states[1].pos, info.col.states[1].vel)
-                .with_portal_traversals(info.col.states[1].portal_traversals)
-                .offset_time(info.col.states[1].time_offset);
+            let timeline_id_0 = info.snaps[0].snap.timeline_id;
+            let timeline_id_1 = info.snaps[1].snap.timeline_id;
 
-            debug_assert!(self.multiverse.is_related(new_snapshot1.timeline_id, new_snapshot2.timeline_id));
-            let child_timeline = max(new_snapshot1.timeline_id, new_snapshot2.timeline_id);
+            debug_assert!(self.multiverse.is_related(timeline_id_0, timeline_id_1));
+            let child_timeline = max(timeline_id_0, timeline_id_1);
 
-            if self.node_has_children(link0, child_timeline) || self.node_has_children(link1, child_timeline) {
-                todo!("Branching not yet implemented");
+            let new_timeline = if
+                self.node_has_children(link0, child_timeline) ||
+                self.node_has_children(link1, child_timeline)
+            {
+                self.multiverse.create_children(child_timeline)
             }
+            else {
+                child_timeline
+            };
 
-            self.snapshots.insert(&self.multiverse, new_snapshot1, Some(link0));
-            self.snapshots.insert(&self.multiverse, new_snapshot2, Some(link1));
+            let new_snapshot0 = info.snaps[0].snap.advanced(info.col.impact_time, info.col.states[0].pos, info.col.states[0].vel)
+                .with_portal_traversals(info.col.states[0].portal_traversals)
+                .offset_time(info.col.states[0].time_offset)
+                .replace_timeline(new_timeline);
+            let new_snapshot1 = info.snaps[1].snap.advanced(info.col.impact_time, info.col.states[1].pos, info.col.states[1].vel)
+                .with_portal_traversals(info.col.states[1].portal_traversals)
+                .offset_time(info.col.states[1].time_offset)
+                .replace_timeline(new_timeline);
+
+            self.snapshots.insert(&self.multiverse, new_snapshot0, Some(link0));
+            self.snapshots.insert(&self.multiverse, new_snapshot1, Some(link1));
 
             let new_time = [
                 info.col.impact_time,
@@ -726,7 +741,7 @@ impl<'a> Simulator<'a> {
             ]
                 .into_iter().reduce(f32::min).expect("not empty");
 
-            self.timelines_present.entry(child_timeline)
+            self.timelines_present.entry(new_timeline)
                 .and_modify(|t| *t = f32::min(*t, new_time))
                 .or_insert(new_time);
         }
