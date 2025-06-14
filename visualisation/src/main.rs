@@ -103,7 +103,6 @@ async fn main() {
                 step_count += 1;
                 let _ = simulator.step();
                 if simulator.finished() {
-                    println!("{simulator:#?}");
                     simulator.extrapolate_to(simulator.max_time());
                 }
             }
@@ -163,11 +162,24 @@ async fn main() {
                     });
                 });
 
+            egui::Window::new("feur").show(ctx, |ui| {
+                ui.label(format!("max_time: {max_time}"));
+                ui.separator();
+                ui.label(format!("{:#?}", simulator.timelines_present));
+                ui.separator();
+                ui.label(format!("{:#?}", simulator.multiverse()));
+            });
+
             egui::Window::new("Controls")
                 .show(ctx, |ui| {
                     let progress = max_time / simulator.max_time();
                     if progress < 1. {
                         ui.add(egui::ProgressBar::new(max_time / simulator.max_time()));
+                    }
+
+                    if ui.button("Full Reset").clicked() {
+                        simulator = sim.create_simulator(simulator.max_time());
+                        time = 0.;
                     }
 
                     ui.horizontal(|ui| {

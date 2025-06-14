@@ -159,7 +159,7 @@ pub struct Simulator<'a> {
 
     max_time: f32,
 
-    timelines_present: HashMap<TimelineId, f32>,
+    pub timelines_present: HashMap<TimelineId, f32>,
 }
 
 impl<'a> Simulator<'a> {
@@ -242,17 +242,20 @@ impl<'a> Simulator<'a> {
             .min_by_key(|&t| OF(t))
             .unwrap_or(0.);
 
-        let max = self.snapshots.nodes().map(|(_, node)| node)
-            .filter(|node| node.age_children.is_empty())
-            .map(|node| (node.snapshot.timeline_id, node.snapshot.time))
-            .fold(HashMap::<TimelineId, f32>::new(), |mut map, (timeline_id, time)| {
-                map.entry(timeline_id)
-                    .and_modify(|t| *t = f32::min(*t, time))
-                    .or_insert(time);
-                map
-            })
-            .into_values()
-            .max_by_key(|&t| OF(t))
+        // TODO: Which one
+        // let max = self.snapshots.nodes().map(|(_, node)| node)
+        //     .filter(|node| node.age_children.is_empty())
+        //     .map(|node| (node.snapshot.timeline_id, node.snapshot.time))
+        //     .fold(HashMap::<TimelineId, f32>::new(), |mut map, (timeline_id, time)| {
+        //         map.entry(timeline_id)
+        //             .and_modify(|t| *t = f32::min(*t, time))
+        //             .or_insert(time);
+        //         map
+        //     })
+        //     .into_values()
+        //     .max_by_key(|&t| OF(t));
+        let max = self.timelines_present.values().copied()
+            .reduce(f32::min)
             .unwrap_or(self.max_time);
 
         (min, max)
@@ -590,8 +593,7 @@ impl<'a> Simulator<'a> {
     }
 
     pub fn finished(&self) -> bool {
-        self.timelines_present.values().copied()
-            .all(|t| t >= self.max_time)
+        self.timelines_present.is_empty()
     }
 
     pub fn step(&mut self) -> ControlFlow<SimStepBreakReason, ()> {
@@ -621,7 +623,7 @@ impl<'a> Simulator<'a> {
 
         // No snapshots means we are too 'early' in the timeline so we need to find
         // the latest time there is something to do
-        if snapshots.is_empty() {
+        if new_snapshots.is_empty() {
             let new_min = self.timeline_query(None, timeline_id).previous_snapshots.into_iter()
                 .map(|link| self.snapshots[link].time)
                 .reduce(f32::min);
@@ -757,6 +759,10 @@ impl<'a> Simulator<'a> {
             self.timelines_present.entry(new_timeline)
                 .and_modify(|t| *t = f32::min(*t, new_time))
                 .or_insert(new_time);
+        }
+
+        if !self.timelines_present.contains_key(&timeline_id) {
+            println!("Closed tid {timeline_id}");
         }
 
         ControlFlow::Continue(())
