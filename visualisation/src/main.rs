@@ -178,10 +178,16 @@ async fn main() {
                         ui.add(egui::ProgressBar::new(max_time / simulator.max_time()));
                     }
 
-                    if ui.button("Full Reset").clicked() {
-                        simulator = sim.create_simulator(simulator.max_time());
-                        time = 0.;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Full Reset").clicked() {
+                            simulator = sim.create_simulator(simulator.max_time());
+                            time = 0.;
+                        }
+                        if ui.button("Full Simulate").clicked() {
+                            simulator.run();
+                            simulator.extrapolate_to(simulator.max_time());
+                        }
+                    });
 
                     ui.horizontal(|ui| {
                         ui.add(egui::Slider::new(&mut time, min_time..=simulator.max_time())
