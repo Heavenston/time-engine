@@ -152,6 +152,15 @@ async fn main() {
                         ui.colored_label(egui::Color32::GRAY, format!("{}", simulator.multiverse().len()));
                     });
                     ui.horizontal(|ui| {
+                        ui.label("Enabled debug rendering (d):");
+                        if enable_debug_rendering {
+                            ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
+                        }
+                        else {
+                            ui.colored_label(egui::Color32::LIGHT_RED, "No");
+                        }
+                    });
+                    ui.horizontal(|ui| {
                         ui.label("Finished simulating:");
                         if simulator.finished() {
                             ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
@@ -161,14 +170,6 @@ async fn main() {
                         }
                     });
                 });
-
-            egui::Window::new("feur").show(ctx, |ui| {
-                ui.label(format!("max_time: {max_time}"));
-                ui.separator();
-                ui.label(format!("{:#?}", simulator.timelines_present));
-                ui.separator();
-                ui.label(format!("{:#?}", simulator.multiverse()));
-            });
 
             egui::Window::new("Controls")
                 .show(ctx, |ui| {
@@ -200,6 +201,14 @@ async fn main() {
                         .clamping(egui::SliderClamping::Never)
                         .text("Speed"));
                 });
+
+            egui::Window::new("Debug Info").default_open(false).show(ctx, |ui| {
+                ui.label(format!("max_time: {max_time}"));
+                ui.separator();
+                ui.label(format!("{:#?}", simulator.timelines_present));
+                ui.separator();
+                ui.label(format!("{:#?}", simulator.multiverse()));
+            });
 
             captured_pointer = ctx.wants_pointer_input();
             captured_keyboard = ctx.wants_keyboard_input();
@@ -240,7 +249,7 @@ async fn main() {
             if scroll != 0. {
                 let mouse_world_before = mouse_pos(&camera);
                 
-                zoom *= CAMERA_ZOOM_SPEED.powf(scroll);
+                zoom *= CAMERA_ZOOM_SPEED.powf(scroll.signum());
                 
                 camera.zoom = cam_centering_zoom * zoom;
                 
