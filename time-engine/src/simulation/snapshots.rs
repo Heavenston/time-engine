@@ -74,7 +74,7 @@ pub struct SimSnapshot {
     pub radius: f32,
     /// Time as seen by the observer
     pub time: f32,
-    pub timeline: TimelineId,
+    pub timeline_id: TimelineId,
     /// Age, the time as seen by the sphere
     pub age: f32,
     pub pos: Vec2,
@@ -246,7 +246,7 @@ impl SimSnapshotContainer {
         if let Some(age_previous) = age_previous {
             let age_parent = &mut self.nodes[age_previous.idx];
             debug_assert_eq!(age_parent.snapshot.original_idx, snapshot.original_idx);
-            let distance = multiverse.distance(age_parent.snapshot.timeline, snapshot.timeline);
+            let distance = multiverse.distance(age_parent.snapshot.timeline_id, snapshot.timeline_id);
             debug_assert!(distance == Some(0) || distance == Some(1));
             let already_found = self.nodes[age_previous.idx].age_children.iter().copied()
                 .find(|&child_link| self[child_link] == snapshot);
@@ -264,7 +264,7 @@ impl SimSnapshotContainer {
             self.nodes[age_previous.idx].age_children.push(link);
             debug_assert!(
                 self.nodes[age_previous.idx].age_children.iter()
-                    .map(|&child_link| self[child_link].timeline)
+                    .map(|&child_link| self[child_link].timeline_id)
                     .all_unique(),
                 "Cannot branch multiple time for the same timeline!"
             );

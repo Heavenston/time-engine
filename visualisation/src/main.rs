@@ -29,7 +29,7 @@ async fn main() {
                 std::f32::consts::FRAC_PI_2,
                 Vec2::new(50., 90.),
             ),
-            time_offset: 0.5,
+            time_offset: 80./30.,
         });
         // sim.push_sphere(te::Sphere {
         //     initial_pos: glam::Vec2::new(10., 50.),
@@ -44,7 +44,7 @@ async fn main() {
         //     ..Default::default()
         // });
         sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(50., 60.), 
+            initial_pos: glam::Vec2::new(50., 30.), 
             initial_velocity: glam::Vec2::new(0., 30.),
             radius: 3.,
             ..Default::default()
@@ -52,7 +52,7 @@ async fn main() {
         sim
     };
 
-    let mut simulator = sim.create_simulator(10.);
+    let mut simulator = sim.create_simulator(5.);
     let mut step_count = 0;
 
     let mut cam_offset = Vec2::ZERO;
