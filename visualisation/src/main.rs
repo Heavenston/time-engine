@@ -32,27 +32,27 @@ async fn main() {
             time_offset: 2.5,
         });
         sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(10., 50.),
-            initial_velocity: glam::Vec2::new(30., 0.),
-            radius: 3.,
-            ..Default::default()
-        });
-        sim.push_sphere(te::Sphere {
             initial_pos: glam::Vec2::new(50., 50.),
             initial_velocity: glam::Vec2::new(-30., 0.),
             radius: 3.,
             ..Default::default()
         });
         sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(50., 30.), 
+            initial_pos: glam::Vec2::new(50., 3.), 
             initial_velocity: glam::Vec2::new(0., 30.),
+            radius: 3.,
+            ..Default::default()
+        });
+        sim.push_sphere(te::Sphere {
+            initial_pos: glam::Vec2::new(80., 50.),
+            initial_velocity: glam::Vec2::new(-10., 0.),
             radius: 3.,
             ..Default::default()
         });
         sim
     };
 
-    let mut simulator = sim.create_simulator(5.);
+    let mut simulator = sim.create_simulator(60.);
     let mut step_count = 0;
 
     let mut cam_offset = Vec2::ZERO;

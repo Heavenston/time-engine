@@ -238,11 +238,24 @@ impl<'a> Simulator<'a> {
     }
 
     pub fn minmax_time(&self) -> (f32, f32) {
-        self.snapshots.nodes()
-            .map(|(_, node)| node.snapshot.time)
-            .minmax_by_key(|&t| OF(t))
-            .into_option()
-            .unwrap_or((0., 0.))
+        let min = self.snapshots.nodes().map(|(_, node)| node.snapshot.time)
+            .min_by_key(|&t| OF(t))
+            .unwrap_or(0.);
+
+        let max = self.snapshots.nodes().map(|(_, node)| node)
+            .filter(|node| node.age_children.is_empty())
+            .map(|node| (node.snapshot.timeline_id, node.snapshot.time))
+            .fold(HashMap::<TimelineId, f32>::new(), |mut map, (timeline_id, time)| {
+                map.entry(timeline_id)
+                    .and_modify(|t| *t = f32::min(*t, time))
+                    .or_insert(time);
+                map
+            })
+            .into_values()
+            .max_by_key(|&t| OF(t))
+            .unwrap_or(self.max_time);
+
+        (min, max)
     }
 
     fn node_has_children(&self, link: SimSnapshotLink, timeline_id: TimelineId) -> bool {

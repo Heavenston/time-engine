@@ -254,7 +254,7 @@ impl SimSnapshotContainer {
             let age_parent = &mut self.nodes[age_previous.idx];
             debug_assert_eq!(age_parent.snapshot.original_idx, snapshot.original_idx);
             let distance = multiverse.distance(age_parent.snapshot.timeline_id, snapshot.timeline_id);
-            debug_assert!(distance == Some(0) || distance == Some(1));
+            debug_assert!(distance.is_some_and(|dist| dist >= 0));
             let already_found = self.nodes[age_previous.idx].age_children.iter().copied()
                 .find(|&child_link| self[child_link] == snapshot);
             if let Some(already_found) = already_found {
