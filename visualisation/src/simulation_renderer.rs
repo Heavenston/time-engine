@@ -24,10 +24,16 @@ pub fn render_simulation(
     draw_rectangle_lines(-2.5, -2.5, world_state.width() + 5., world_state.height() + 5., 5., WHITE);
 
     // Draw spheres
-    for snap in simulator.time_query(Some(time)).into_iter()
-        .map(|link| simulator.snapshots()[link].extrapolate(time))
-        .flat_map(move |snap| std::iter::once(snap).chain(snap.get_ghosts()))
+    for (is_generated_ghost, snap) in simulator.time_query(time).into_iter()
+        .map(|(range, link)| (range, simulator.snapshots()[link]))
+        .flat_map(move |(range, snap)| std::iter::once((range.clone(), false, snap))
+            .chain(snap.get_ghosts()
+                .filter(move |ghost| time < ghost.expiration_time)
+                .map(move |ghost| (range.offset(ghost.offset), true, ghost.snapshot))))
+        .filter(|(range, _, _)| range.contains(time))
+        .map(|(_, is_ghost, snap)| (is_ghost, snap.extrapolate(time)))
     {
+        let is_ghost = snap.is_ghost();
         let te::SimSnapshot {
             pos, vel, radius: rad,
             portal_traversals,
@@ -44,13 +50,36 @@ pub fn render_simulation(
             // draw a velocity line
             draw_line(pos.x, pos.y, pos.x + vel.x, pos.y + vel.y, 0.5, ORANGE.with_alpha(0.25));
 
-            if !portal_traversals.is_empty() {
-                let outline = sphere_shapes.outline(&i_overlay::mesh::style::OutlineStyle {
+            let mut previous_shape = sphere_shapes.clone();
+            if is_generated_ghost {
+                let outline = previous_shape.outline(&i_overlay::mesh::style::OutlineStyle {
                     outer_offset: 0.5,
                     inner_offset: 0.,
                     join: i_overlay::mesh::style::LineJoin::Bevel,
-                }).overlay(&sphere_shapes, OverlayRule::Difference, FillRule::EvenOdd);
-                draw_shapes(Vec2::ZERO, &outline, RED);
+                });
+                let outline2 = outline.overlay(&previous_shape, OverlayRule::Difference, FillRule::EvenOdd);
+                previous_shape = outline;
+                draw_shapes(Vec2::ZERO, &outline2, ORANGE);
+            }
+            if !portal_traversals.is_empty() {
+                let outline = previous_shape.outline(&i_overlay::mesh::style::OutlineStyle {
+                    outer_offset: 0.5,
+                    inner_offset: 0.,
+                    join: i_overlay::mesh::style::LineJoin::Bevel,
+                });
+                let outline2 = outline.overlay(&previous_shape, OverlayRule::Difference, FillRule::EvenOdd);
+                previous_shape = outline;
+                draw_shapes(Vec2::ZERO, &outline2, RED);
+            }
+            if is_ghost {
+                let outline = previous_shape.outline(&i_overlay::mesh::style::OutlineStyle {
+                    outer_offset: 0.5,
+                    inner_offset: 0.,
+                    join: i_overlay::mesh::style::LineJoin::Bevel,
+                });
+                let outline2 = outline.overlay(&previous_shape, OverlayRule::Difference, FillRule::EvenOdd);
+                previous_shape = outline;
+                draw_shapes(Vec2::ZERO, &outline2, GREEN);
             }
 
             draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE.with_alpha(0.5));

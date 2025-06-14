@@ -29,20 +29,20 @@ async fn main() {
                 std::f32::consts::FRAC_PI_2,
                 Vec2::new(50., 90.),
             ),
-            time_offset: 0.,
+            time_offset: 0.5,
         });
-        sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(10., 50.),
-            initial_velocity: glam::Vec2::new(30., 0.),
-            radius: 3.,
-            ..Default::default()
-        });
-        sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(50., 50.),
-            initial_velocity: glam::Vec2::new(-30., 0.),
-            radius: 3.,
-            ..Default::default()
-        });
+        // sim.push_sphere(te::Sphere {
+        //     initial_pos: glam::Vec2::new(10., 50.),
+        //     initial_velocity: glam::Vec2::new(30., 0.),
+        //     radius: 3.,
+        //     ..Default::default()
+        // });
+        // sim.push_sphere(te::Sphere {
+        //     initial_pos: glam::Vec2::new(50., 50.),
+        //     initial_velocity: glam::Vec2::new(-30., 0.),
+        //     radius: 3.,
+        //     ..Default::default()
+        // });
         sim.push_sphere(te::Sphere {
             initial_pos: glam::Vec2::new(50., 60.), 
             initial_velocity: glam::Vec2::new(0., 30.),
@@ -52,7 +52,7 @@ async fn main() {
         sim
     };
 
-    let mut simulator = sim.create_simulator(30.);
+    let mut simulator = sim.create_simulator(10.);
     let mut step_count = 0;
 
     let mut cam_offset = Vec2::ZERO;
@@ -98,6 +98,7 @@ async fn main() {
                 step_count += 1;
                 let _ = simulator.step();
                 if simulator.finished() {
+                    println!("{simulator:#?}");
                     simulator.extrapolate_to(simulator.max_time());
                 }
             }

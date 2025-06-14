@@ -1,8 +1,8 @@
 use super::*;
 
-use std::ops::{Index, IndexMut};
+use std::ops::{ Index, IndexMut };
 
-use glam::{Affine2, Vec2};
+use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -54,6 +54,14 @@ impl SimPortalTraversal {
         let inv_input = self.portal_in.transform.inverse();
         self.portal_out.transform.transform_vector2(inv_input.transform_vector2(vector))
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct GhostInfo {
+    pub snapshot: SimSnapshot,
+    pub offset: f32,
+    pub index: usize,
+    pub expiration_time: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -144,20 +152,31 @@ impl SimSnapshot {
             })
     }
 
-    pub fn get_ghosts(self) -> impl Iterator<Item = Self> {
+    pub fn get_ghosts(self) -> impl Iterator<Item = GhostInfo> {
         // FIXME: probably incorrect for >1 portal traversals
         // (asserts just as reminder of this fact)
         assert!(self.portal_traversals.len() <= 1);
 
         self.portal_traversals.into_iter()
-            .map(move |traversal| Self {
-                time: self.time + traversal.time_offset(),
-                pos: traversal.transform_point(self.pos),
-                vel: traversal.transform_vector(self.vel),
-                portal_traversals: self.portal_traversals.iter()
-                    .map(|traversal| traversal.swap())
-                    .collect(),
-                ..self
+            .enumerate()
+            .map(move |(index, traversal)| {
+                let start = self.time + traversal.time_offset();
+                let expiration_time = start + (traversal.end_age - self.age);
+                let snapshot = Self {
+                    time: start,
+                    pos: traversal.transform_point(self.pos),
+                    vel: traversal.transform_vector(self.vel),
+                    portal_traversals: self.portal_traversals.iter()
+                        .map(|traversal| traversal.swap())
+                        .collect(),
+                    ..self
+                };
+                GhostInfo {
+                    snapshot,
+                    offset: traversal.time_offset(),
+                    index,
+                    expiration_time,
+                }
             })
     }
 }
@@ -224,16 +243,24 @@ impl SimSnapshotContainer {
         debug_assert!(!snapshot.is_ghost());
         let link = SimSnapshotLink { idx: self.nodes.len() };
 
+        if let Some(age_previous) = age_previous {
+            let age_parent = &mut self.nodes[age_previous.idx];
+            debug_assert_eq!(age_parent.snapshot.original_idx, snapshot.original_idx);
+            let distance = multiverse.distance(age_parent.snapshot.timeline, snapshot.timeline);
+            debug_assert!(distance == Some(0) || distance == Some(1));
+            let already_found = self.nodes[age_previous.idx].age_children.iter().copied()
+                .find(|&child_link| self[child_link] == snapshot);
+            if let Some(already_found) = already_found {
+                return already_found;
+            }
+        }
+
         self.nodes.push(SimSnapshotNode {
             age_previous,
             ..SimSnapshotNode::from(snapshot)
         });
 
         if let Some(age_previous) = age_previous {
-            let age_parent = &mut self.nodes[age_previous.idx];
-            debug_assert_eq!(age_parent.snapshot.original_idx, snapshot.original_idx);
-            let distance = multiverse.distance(age_parent.snapshot.timeline, snapshot.timeline);
-            debug_assert!(distance == Some(0) || distance == Some(1));
             self.nodes[age_previous.idx].age_children.push(link);
             debug_assert!(
                 self.nodes[age_previous.idx].age_children.iter()
