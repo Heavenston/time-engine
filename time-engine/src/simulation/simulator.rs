@@ -601,6 +601,8 @@ impl<'a> Simulator<'a> {
             .min_by_key(|&(_, &t)| OF(t))
         else { return ControlFlow::Break(SimStepBreakReason::Finished) };
 
+        let time = time + DEFAULT_EPSILON;
+
         if time >= self.max_time {
             return ControlFlow::Break(SimStepBreakReason::Finished);
         }
@@ -759,10 +761,6 @@ impl<'a> Simulator<'a> {
             self.timelines_present.entry(new_timeline)
                 .and_modify(|t| *t = f32::min(*t, new_time))
                 .or_insert(new_time);
-        }
-
-        if !self.timelines_present.contains_key(&timeline_id) {
-            println!("Closed tid {timeline_id}");
         }
 
         ControlFlow::Continue(())

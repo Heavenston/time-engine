@@ -97,6 +97,7 @@ impl SimSnapshot {
             pos: new_pos,
             vel: new_vel,
             portal_traversals: self.portal_traversals.into_iter()
+                .filter(|traversal| traversal.end_age > new_age)
                 .map(|traversal| {
                     if !changed_vel { return traversal; }
 

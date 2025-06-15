@@ -12,7 +12,7 @@ mod immutable_util;
 pub(crate) use immutable_util::*;
 
 // pub const DEFAULT_EPSILON: f32 = parry2d::math::DEFAULT_EPSILON;
-pub const DEFAULT_EPSILON: f32 = parry2d::math::DEFAULT_EPSILON;
+pub const DEFAULT_EPSILON: f32 = 0.001;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortalDirection {

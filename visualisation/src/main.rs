@@ -31,24 +31,24 @@ async fn main() {
             ),
             time_offset: 2.5,
         });
-        sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(50., 50.),
-            initial_velocity: glam::Vec2::new(-30., 0.),
-            radius: 3.,
-            ..Default::default()
-        });
+        // sim.push_sphere(te::Sphere {
+        //     initial_pos: glam::Vec2::new(50., 50.),
+        //     initial_velocity: glam::Vec2::new(-30., 0.),
+        //     radius: 3.,
+        //     ..Default::default()
+        // });
         sim.push_sphere(te::Sphere {
             initial_pos: glam::Vec2::new(50., 3.), 
             initial_velocity: glam::Vec2::new(0., 30.),
             radius: 3.,
             ..Default::default()
         });
-        sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(80., 50.),
-            initial_velocity: glam::Vec2::new(-10., 0.),
-            radius: 3.,
-            ..Default::default()
-        });
+        // sim.push_sphere(te::Sphere {
+        //     initial_pos: glam::Vec2::new(80., 50.),
+        //     initial_velocity: glam::Vec2::new(-10., 0.),
+        //     radius: 3.,
+        //     ..Default::default()
+        // });
         sim
     };
 
@@ -61,6 +61,7 @@ async fn main() {
     let mut is_paused = false;
     let mut time = 0.;
     let mut speed = 1.;
+    let mut max_t_text = format!("{:.02}", simulator.max_time());
 
     let mouse_pos = |camera: &Camera2D| {
         camera.screen_to_world(Vec2::new(mouse_position().0, mouse_position().1))
@@ -144,10 +145,6 @@ async fn main() {
                         ui.colored_label(egui::Color32::GRAY, format!("{step_count}"));
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Max time:");
-                        ui.colored_label(egui::Color32::GRAY, format!("{max_time}"));
-                    });
-                    ui.horizontal(|ui| {
                         ui.label("Number of timelines:");
                         ui.colored_label(egui::Color32::GRAY, format!("{}", simulator.multiverse().len()));
                     });
@@ -186,6 +183,11 @@ async fn main() {
                         if ui.button("Full Simulate").clicked() {
                             simulator.run();
                             simulator.extrapolate_to(simulator.max_time());
+                        }
+                        let response = ui.add(egui::TextEdit::singleline(&mut max_t_text));
+                        if response.lost_focus() && let Ok(max_t) = max_t_text.parse::<f32>() {
+                            simulator = sim.create_simulator(max_t);
+                            max_t_text = format!("{max_t:.02}");
                         }
                     });
 
