@@ -1,10 +1,12 @@
 mod draw_polygon;
 mod simulation_renderer;
 
+use itertools::Itertools;
 use simulation_renderer::{render_simulation, RenderSimulationArgs};
 
 use time_engine as te;
 use macroquad::{ prelude::*, ui::{ self, root_ui } };
+use ordered_float::OrderedFloat as OF;
 
 const CAMERA_ZOOM_SPEED: f32 = 1.25;
 
@@ -146,7 +148,11 @@ async fn main() {
                     });
                     ui.horizontal(|ui| {
                         ui.label("Number of timelines:");
-                        ui.colored_label(egui::Color32::GRAY, format!("{}", simulator.multiverse().len()));
+                        let active = simulator.time_query(time).into_iter()
+                            .map(|(_, link)| simulator.snapshots()[link].timeline_id)
+                            .unique()
+                            .count();
+                        ui.colored_label(egui::Color32::GRAY, format!("{active}/{}", simulator.multiverse().len()));
                     });
                     ui.horizontal(|ui| {
                         ui.label("Enabled debug rendering (d):");
@@ -178,7 +184,6 @@ async fn main() {
                     ui.horizontal(|ui| {
                         if ui.button("Full Reset").clicked() {
                             simulator = sim.create_simulator(simulator.max_time());
-                            time = 0.;
                         }
                         if ui.button("Full Simulate").clicked() {
                             simulator.run();
@@ -212,6 +217,21 @@ async fn main() {
 
             egui::Window::new("Debug Info").default_open(false).show(ctx, |ui| {
                 ui.label(format!("max_time: {max_time}"));
+                ui.separator();
+                ui.label(format!("Current time: {:?}", time));
+                ui.separator();
+                let str = simulator.snapshots().nodes().map(|(_, snap)| snap.snapshot.time)
+                    .unique_by(|&t| OF(t))
+                    .sorted_by_key(|&t| OF((t - time).abs()))
+                    .take(5)
+                    .sorted_by_key(|&t| OF(t))
+                    .join(" -> \n   ");
+                ui.label(format!("Times:\n   {str}"));
+                ui.separator();
+                let (q_min, q_max) = simulator.time_query(time).into_iter()
+                    .map(|(_, link)| simulator.snapshots()[link].time)
+                    .minmax_by_key(|&t| OF(t)).into_option().unwrap_or_default();
+                ui.label(format!("Queryied: {q_min} - {q_max}"));
                 ui.separator();
                 ui.label(format!("{:#?}", simulator.timelines_present));
                 ui.separator();
