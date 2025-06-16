@@ -32,6 +32,7 @@ struct SimSphereNewState {
 
 #[derive(Debug, Clone, Copy)]
 struct SimSphereCollision<const N: usize> {
+    #[allow(dead_code)]
     debug_reason: &'static str,
     impact_time: f32,
     states: [SimSphereNewState; N],
