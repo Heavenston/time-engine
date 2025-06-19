@@ -1,7 +1,8 @@
 use std::{
     cmp::max,
     iter::{ empty, once, repeat },
-    ops::{ BitAnd, ControlFlow, Range, RangeFrom }
+    ops::{ BitAnd, ControlFlow, Range, RangeFrom },
+    rc::Rc
 };
 
 use glam::{ Affine2, Vec2 };
@@ -255,8 +256,8 @@ pub struct TimelineQueryResult {
 }
 
 #[derive(Debug)]
-pub struct Simulator<'a> {
-    world_state: &'a WorldState,
+pub struct Simulator {
+    world_state: Rc<WorldState>,
     multiverse: TimelineMultiverse,
     snapshots: SimSnapshotContainer,
 
@@ -267,8 +268,8 @@ pub struct Simulator<'a> {
     max_time: f32,
 }
 
-impl<'a> Simulator<'a> {
-    pub fn new(world_state: &'a WorldState, max_time: f32) -> Self {
+impl Simulator {
+    pub fn new(world_state: Rc<WorldState>, max_time: f32) -> Self {
         let multiverse = TimelineMultiverse::new();
 
         let mut snapshots = SimSnapshotContainer::new();

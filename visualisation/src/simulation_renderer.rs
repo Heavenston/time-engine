@@ -7,7 +7,7 @@ pub struct RenderSimulationArgs<'a> {
     pub world_state: &'a te::WorldState,
     pub enable_debug_rendering: bool,
     pub time: f32,
-    pub simulator: &'a Simulator<'a>,
+    pub simulator: &'a Simulator,
 }
 
 const BALL_COLORS: [Color; 10] = [
