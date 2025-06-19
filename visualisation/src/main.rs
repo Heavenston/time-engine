@@ -24,7 +24,7 @@ async fn main() {
     let mut current_scene_index = 0;
     let mut sim = scenes[current_scene_index].create_world_state();
 
-    let mut simulator = sim.create_simulator(60.);
+    let mut simulator = sim.create_simulator(scenes[current_scene_index].default_max_time());
     let _ = simulator.step();
     let mut step_count = 1;
     let mut scene_changed = false;
@@ -233,6 +233,15 @@ async fn main() {
                 ui.label(format!("Queryied: {q_min} - {q_max}"));
                 ui.separator();
                 ui.label(format!("{:#?}", simulator.multiverse()));
+                ui.separator();
+                if ui.button("Manual Step").clicked() {
+                    step_count += 1;
+                    if simulator.step().is_break() {
+                        simulator_finished = true;
+                        simulator.extrapolate_to(simulator.max_time());
+                    }
+                }
+                ui.toggle_value(selected, text)
             });
 
             captured_pointer = ctx.wants_pointer_input();
@@ -241,7 +250,7 @@ async fn main() {
 
         if scene_changed {
             sim = scenes[current_scene_index].create_world_state();
-            simulator = sim.create_simulator(60.);
+            simulator = sim.create_simulator(scenes[current_scene_index].default_max_time());
             let _ = simulator.step();
             simulator_finished = false;
             step_count = 1;
