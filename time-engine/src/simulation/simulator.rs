@@ -5,7 +5,7 @@ use std::{
 };
 
 use glam::{ Affine2, Vec2 };
-use itertools::Itertools;
+use itertools::{izip, Itertools};
 use ordered_float::OrderedFloat as OF;
 use nalgebra as na;
 
@@ -437,6 +437,49 @@ impl<'a> Simulator<'a> {
         })
     }
 
+    fn apply_collision_1(&mut self, info: SimCollisionInfo<1>) {
+        let (link, snap) = info.get_snap(0);
+        self.snapshots.insert(&self.multiverse, snap.unghostify(), Some(link));
+    }
+
+    fn apply_collision_2(&mut self, info: SimCollisionInfo<2>) {
+        let (link0, new_snapshot0) = info.get_snap(0);
+        let (link1, new_snapshot1) = info.get_snap(1);
+        let child_timeline = info.child_timeline(&self.multiverse);
+
+        let new_timeline = if
+            self.node_has_children(link0, child_timeline) ||
+            self.node_has_children(link1, child_timeline)
+        {
+            self.multiverse.create_children(child_timeline)
+        }
+        else {
+            child_timeline
+        };
+
+        self.snapshots.insert(
+            &self.multiverse,
+            new_snapshot0.replace_timeline(new_timeline).unghostify(),
+            Some(link0)
+        );
+        self.snapshots.insert(
+            &self.multiverse,
+            new_snapshot1.replace_timeline(new_timeline).unghostify(),
+            Some(link1)
+        );
+    }
+
+    fn apply_collision(&mut self, info: SimGenericCollisionInfo) {
+        match info {
+            SimGenericCollisionInfo::One(info) => {
+                self.apply_collision_1(info);
+            },
+            SimGenericCollisionInfo::Two(info) => {
+                self.apply_collision_2(info);
+            },
+        }
+    }
+
     fn cast_sphere_wall_collision(&self, snap: &SimSnapshot) -> Option<SimSphereCollision<1>> {
         let walls_shape = self.world_state.get_static_body_collision();
         let walls_shape = snap.portal_traversals.iter()
@@ -547,6 +590,10 @@ impl<'a> Simulator<'a> {
     }
 
     fn cast_sphere_portal_traversal_start(&self, snap: &SimSnapshot, portal_idx: usize) -> Option<SimSphereCollision<1>> {
+        if snap.is_ghost() {
+            return None;
+        }
+
         let sphere_shape = parry2d::shape::Ball::new(snap.radius);
         let portal = self.portals[portal_idx];
         let portal_shape = parry2d::shape::Polyline::new(vec![
@@ -627,6 +674,10 @@ impl<'a> Simulator<'a> {
     }
 
     fn cast_sphere_portal_traversal_end(&self, snap: &SimSnapshot, portal_idx: usize) -> Option<SimSphereCollision<1>> {
+        if snap.is_ghost() {
+            return None;
+        }
+
         let traversal = snap.portal_traversals.iter().copied()
             .find(|traversal| traversal.portal_in_idx == portal_idx)?;
 
@@ -669,15 +720,24 @@ impl<'a> Simulator<'a> {
     ) -> Option<SimGenericCollisionInfo> {
         let timeline_id = snap.timeline_id;
 
-        let world: AutoTinyVec<(SimSnapshotLink, SimSnapshot)> =
+        let world: AutoSmallVec<(SimSnapshotLink, SimSnapshot)> =
             self.timeline_query(snap.timeline_id)
             .filter(|&link_| link != link_)
-            .filter(|&link_| {
-                let (range_, ranges_) = self.get_node_time_ranges(link_, Some(timeline_id));
-                once(range_).chain(ranges_)
-                    .any(|r| r.contains(snap.time))
+            .flat_map(|link_| {
+                let snap = self.snapshots[link_];
+                let (range, ranges) = self.get_node_time_ranges(link_, Some(timeline_id));
+                let mut ranges = ranges.map(Some).collect_smallvec();
+
+                repeat(link_).zip(
+                    once((range, snap))
+                    .chain(snap.get_ghosts()
+                        .map(move |ghost| (ranges[ghost.index].take().expect("Taken once"), ghost.snapshot)))
+                ).map(|(a, (b, c))| (a, b, c))
             })
-            .map(|link| (link, self.snapshots[link].extrapolate(snap.time)))
+            .filter(|(_, range, _)| {
+                range.contains(snap.time)
+            })
+            .map(|(link, _, snap_)| (link, snap_.extrapolate(snap.time)))
             .collect()
         ;
         // Find a snapshot that already exist and is in the future
@@ -695,7 +755,9 @@ impl<'a> Simulator<'a> {
             .min_by_key(|&r| OF(r))
         ;
 
-        println!("next_snapshot_time = {next_snapshot_time:?}");
+        if let Some(next_snapshot_time) = next_snapshot_time {
+            dbg!(next_snapshot_time);
+        }
 
         let collision_infos = empty::<SimGenericCollisionInfo>()
             .chain(
@@ -769,49 +831,6 @@ impl<'a> Simulator<'a> {
         }
     }
 
-    fn apply_collision_1(&mut self, info: SimCollisionInfo<1>) {
-        let (link, snap) = info.get_snap(0);
-        self.snapshots.insert(&self.multiverse, snap.unghostify(), Some(link));
-    }
-
-    fn apply_collision_2(&mut self, info: SimCollisionInfo<2>) {
-        let (link0, new_snapshot0) = info.get_snap(0);
-        let (link1, new_snapshot1) = info.get_snap(1);
-        let child_timeline = info.child_timeline(&self.multiverse);
-
-        let new_timeline = if
-            self.node_has_children(link0, child_timeline) ||
-            self.node_has_children(link1, child_timeline)
-        {
-            self.multiverse.create_children(child_timeline)
-        }
-        else {
-            child_timeline
-        };
-
-        self.snapshots.insert(
-            &self.multiverse,
-            new_snapshot0.replace_timeline(new_timeline).unghostify(),
-            Some(link0)
-        );
-        self.snapshots.insert(
-            &self.multiverse,
-            new_snapshot1.replace_timeline(new_timeline).unghostify(),
-            Some(link1)
-        );
-    }
-
-    fn apply_collision(&mut self, info: SimGenericCollisionInfo) {
-        match info {
-            SimGenericCollisionInfo::One(info) => {
-                self.apply_collision_1(info);
-            },
-            SimGenericCollisionInfo::Two(info) => {
-                self.apply_collision_2(info);
-            },
-        }
-    }
-
     pub fn step(&mut self) -> ControlFlow<SimStepBreakReason, ()> {
         let next_collisions = self.snapshots.nodes()
             .filter(|(_, node)| node.age_children.is_empty())
@@ -833,7 +852,7 @@ impl<'a> Simulator<'a> {
             // what we actually want is the collisions that hat no collisions 'before' it
             // but with time travel this is non trivial, using the most parent timeline
             // first seems to be the way but who knows
-            .min_set_by_key(|col| (col.parent_timeline(&self.multiverse), OF(col.impact_time())))
+            .min_set_by_key(|col| OF(col.impact_time()))
         ;
         let Some(next_collision) = next_collisions.first().cloned()
         else { return ControlFlow::Break(SimStepBreakReason::Finished) };

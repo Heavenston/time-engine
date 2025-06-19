@@ -19,7 +19,18 @@ const fn n_elements_for_stack<T>() -> usize {
     std::mem::size_of::<T>() / std::mem::size_of::<Vec<T>>()
 }
 
-pub(crate) type AutoTinyVec<T> = smallvec::SmallVec<T, { n_elements_for_stack::<T>() }>;
+pub(crate) type TinyVec<T, const N: usize> = smallvec::SmallVec<T, N>;
+pub(crate) type AutoSmallVec<T> = smallvec::SmallVec<T, { n_elements_for_stack::<T>() }>;
+
+pub(crate) trait AutoSmallVecIterExt<T> {
+    fn collect_smallvec(self) -> AutoSmallVec<T>;
+}
+
+impl<T, I: Iterator<Item = T>> AutoSmallVecIterExt<T> for I {
+    fn collect_smallvec(self) -> AutoSmallVec<T> {
+        self.collect()
+    }
+}
 
 // pub const DEFAULT_EPSILON: f32 = parry2d::math::DEFAULT_EPSILON;
 pub const DEFAULT_EPSILON: f32 = 0.001;
