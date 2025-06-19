@@ -32,6 +32,7 @@ struct AppState {
     speed: f32,
     max_t_text: String,
     simulator_finished: bool,
+    auto_full_simulate: bool,
 }
 
 impl AppState {
@@ -57,6 +58,7 @@ impl AppState {
             time: 0.0,
             speed: 1.0,
             simulator_finished: false,
+            auto_full_simulate: true,
         }
     }
     
@@ -93,6 +95,8 @@ impl AppState {
         } else if self.time > self.simulator.max_time() {
             self.time = self.simulator.max_time();
             self.is_paused = true;
+        } else if self.auto_full_simulate && !self.simulator_finished {
+            self.simulation_step();
         } else if self.time > max_time {
             if self.simulator_finished {
                 self.time = max_time;
@@ -249,6 +253,11 @@ impl AppState {
                 ui.colored_label(egui::Color32::GRAY, format!("{active}/{}", self.simulator.multiverse().len()));
             });
             ui.horizontal(|ui| {
+                ui.label("Number of snapshots:");
+                let number = self.simulator.snapshots().nodes().count();
+                ui.colored_label(egui::Color32::GRAY, format!("{number}"));
+            });
+            ui.horizontal(|ui| {
                 ui.label("Enabled debug rendering (d):");
                 if self.enable_debug_rendering {
                     ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
@@ -256,14 +265,16 @@ impl AppState {
                     ui.colored_label(egui::Color32::LIGHT_RED, "No");
                 }
             });
-            ui.horizontal(|ui| {
-                ui.label("Finished simulating:");
-                if self.simulator_finished {
-                    ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
-                } else {
-                    ui.colored_label(egui::Color32::LIGHT_RED, "No");
-                }
-            });
+            if !self.auto_full_simulate {
+                ui.horizontal(|ui| {
+                    ui.label("Finished simulating:");
+                    if self.simulator_finished {
+                        ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
+                    } else {
+                        ui.colored_label(egui::Color32::LIGHT_RED, "No");
+                    }
+                });
+            }
         });
     }
     
@@ -278,18 +289,16 @@ impl AppState {
                 if ui.button("Full Reset").clicked() {
                     self.reset_simulator();
                 }
-                if ui.button("Full Simulate").clicked() {
+                if !self.auto_full_simulate && ui.button("Full Simulate").clicked() {
                     self.full_simulate();
                 }
                 let response = ui.add(egui::TextEdit::singleline(&mut self.max_t_text));
-                if response.lost_focus() {
-                    if let Ok(max_t) = self.max_t_text.parse::<f32>() {
-                        self.simulator = self.sim.clone().create_simulator(max_t);
-                        let _ = self.simulator.step();
-                        self.simulator_finished = false;
-                        self.step_count = 1;
-                        self.max_t_text = format!("{max_t:.02}");
-                    }
+                if response.lost_focus() && let Ok(max_t) = self.max_t_text.parse::<f32>() {
+                    self.simulator = self.sim.clone().create_simulator(max_t);
+                    let _ = self.simulator.step();
+                    self.simulator_finished = false;
+                    self.step_count = 1;
+                    self.max_t_text = format!("{max_t:.02}");
                 }
             });
             
@@ -354,6 +363,7 @@ impl AppState {
             if ui.button("Manual Step").clicked() {
                 self.simulation_step();
             }
+            ui.checkbox(&mut self.auto_full_simulate, "Auto full simulate");
         });
     }
     
