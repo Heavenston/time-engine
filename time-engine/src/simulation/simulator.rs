@@ -568,16 +568,36 @@ impl<'a> Simulator<'a> {
             )
         };
 
-        let result = parry2d::query::cast_shapes(
-            &plane_iso, &default(), &portal_shape,
+        let contact = parry2d::query::contact(
+            &na::Isometry2::translation(snap.pos.x, snap.pos.y),  &sphere_shape,
+            &plane_iso, &portal_shape,
+            0.
+        ).expect("supported");
 
-            &na::Isometry2::translation(snap.pos.x, snap.pos.y), &na::vector![snap.vel.x, snap.vel.y], &sphere_shape,
+        let result = contact
+            .map(|contact| {
+                parry2d::query::ShapeCastHit {
+                    time_of_impact: 0.,
+                    witness1: contact.point1,
+                    witness2: contact.point2,
+                    normal1: contact.normal1,
+                    normal2: contact.normal2,
+                    // unused anyway
+                    status: parry2d::query::ShapeCastStatus::Converged,
+                }
+            })
+            .or_else(|| {
+                parry2d::query::cast_shapes(
+                    &plane_iso, &default(), &portal_shape,
 
-            parry2d::query::ShapeCastOptions {
-                stop_at_penetration: true,
-                ..default()
-            }
-        ).expect("supported")?;
+                    &na::Isometry2::translation(snap.pos.x, snap.pos.y), &na::vector![snap.vel.x, snap.vel.y], &sphere_shape,
+
+                    parry2d::query::ShapeCastOptions {
+                        stop_at_penetration: true,
+                        ..default()
+                    }
+                ).expect("supported")
+            })?;
 
         let impact_dt = result.time_of_impact;
         let impact_time = impact_dt + snap.time;
@@ -751,7 +771,7 @@ impl<'a> Simulator<'a> {
 
     fn apply_collision_1(&mut self, info: SimCollisionInfo<1>) {
         let (link, snap) = info.get_snap(0);
-        self.snapshots.insert(&self.multiverse, snap, Some(link));
+        self.snapshots.insert(&self.multiverse, snap.unghostify(), Some(link));
     }
 
     fn apply_collision_2(&mut self, info: SimCollisionInfo<2>) {
@@ -771,12 +791,12 @@ impl<'a> Simulator<'a> {
 
         self.snapshots.insert(
             &self.multiverse,
-            new_snapshot0.replace_timeline(new_timeline),
+            new_snapshot0.replace_timeline(new_timeline).unghostify(),
             Some(link0)
         );
         self.snapshots.insert(
             &self.multiverse,
-            new_snapshot1.replace_timeline(new_timeline),
+            new_snapshot1.replace_timeline(new_timeline).unghostify(),
             Some(link1)
         );
     }

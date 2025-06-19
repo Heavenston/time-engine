@@ -28,7 +28,7 @@ async fn main() {
                 Vec2::new(25., 70.),
             ),
             out_transform: Affine2::from_angle_translation(
-                std::f32::consts::PI,
+                0.,
                 Vec2::new(25., 30.),
             ),
             time_offset: 0.,
@@ -53,13 +53,13 @@ async fn main() {
         //     ..Default::default()
         // });
         sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(27., 30.), 
+            initial_pos: glam::Vec2::new(25.5, 70.), 
             initial_velocity: glam::Vec2::new(0., 0.),
             radius: 3.,
             ..Default::default()
         });
         sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(32., 3.),
+            initial_pos: glam::Vec2::new(29., 3.),
             initial_velocity: glam::Vec2::new(0., 30.),
             radius: 3.,
             ..Default::default()
@@ -68,7 +68,8 @@ async fn main() {
     };
 
     let mut simulator = sim.create_simulator(60.);
-    let mut step_count = 0;
+    let _ = simulator.step();
+    let mut step_count = 1;
 
     let mut cam_offset = Vec2::ZERO;
     let mut zoom = 1.;
@@ -206,8 +207,9 @@ async fn main() {
                     ui.horizontal(|ui| {
                         if ui.button("Full Reset").clicked() {
                             simulator = sim.create_simulator(simulator.max_time());
+                            let _ = simulator.step();
                             simulator_finished = false;
-                            step_count = 0;
+                            step_count = 1;
                         }
                         if ui.button("Full Simulate").clicked() {
                             simulator_finished = true;
@@ -217,8 +219,9 @@ async fn main() {
                         let response = ui.add(egui::TextEdit::singleline(&mut max_t_text));
                         if response.lost_focus() && let Ok(max_t) = max_t_text.parse::<f32>() {
                             simulator = sim.create_simulator(max_t);
+                            let _ = simulator.step();
                             simulator_finished = false;
-                            step_count = 0;
+                            step_count = 1;
                             max_t_text = format!("{max_t:.02}");
                         }
                     });
