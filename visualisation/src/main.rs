@@ -1,10 +1,11 @@
 mod draw_polygon;
 mod simulation_renderer;
+mod scenes;
 
 use itertools::Itertools;
 use simulation_renderer::{render_simulation, RenderSimulationArgs};
+use scenes::get_all_scenes;
 
-use time_engine as te;
 use macroquad::{ prelude::*, ui::{ self, root_ui } };
 use ordered_float::OrderedFloat as OF;
 
@@ -19,57 +20,14 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let sim = {
-        let mut sim = te::WorldState::new(100., 100.);
-        sim.push_portal(te::Portal {
-            height: 15.,
-            in_transform: Affine2::from_angle_translation(
-                std::f32::consts::PI,
-                Vec2::new(25., 70.),
-            ),
-            out_transform: Affine2::from_angle_translation(
-                0.,
-                Vec2::new(25., 30.),
-            ),
-            time_offset: 0.,
-        });
-        //  sim.push_portal(te::Portal {
-        //     height: 20.,
-        //     in_transform: Affine2::from_angle_translation(
-        //         std::f32::consts::PI,
-        //         Vec2::new(98., 50.),
-        //     ),
-        //     out_transform: Affine2::from_angle_translation(
-        //         std::f32::consts::FRAC_PI_2,
-        //         Vec2::new(50., 98.),
-        //     ),
-        //     // time_offset: 2.5,
-        //     time_offset: 0.,
-        // });
-        // sim.push_sphere(te::Sphere {
-        //     initial_pos: glam::Vec2::new(50., 50.),
-        //     initial_velocity: glam::Vec2::new(30., 0.),
-        //     radius: 3.,
-        //     ..Default::default()
-        // });
-        sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(25.5, 70.), 
-            initial_velocity: glam::Vec2::new(0., 0.),
-            radius: 3.,
-            ..Default::default()
-        });
-        sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(29., 3.),
-            initial_velocity: glam::Vec2::new(0., 30.),
-            radius: 3.,
-            ..Default::default()
-        });
-        sim
-    };
+    let scenes = get_all_scenes();
+    let mut current_scene_index = 0;
+    let mut sim = scenes[current_scene_index].create_world_state();
 
     let mut simulator = sim.create_simulator(60.);
     let _ = simulator.step();
     let mut step_count = 1;
+    let mut scene_changed = false;
 
     let mut cam_offset = Vec2::ZERO;
     let mut zoom = 1.;
@@ -245,6 +203,17 @@ async fn main() {
                         .text("Speed"));
                 });
 
+            egui::Window::new("Scene Selector")
+                .show(ctx, |ui| {
+                    ui.label("Select Scene:");
+                    for (i, scene) in scenes.iter().enumerate() {
+                        if ui.selectable_label(i == current_scene_index, scene.name()).clicked() {
+                            current_scene_index = i;
+                            scene_changed = true;
+                        }
+                    }
+                });
+
             egui::Window::new("Debug Info").default_open(false).show(ctx, |ui| {
                 ui.label(format!("max_time: {max_time}"));
                 ui.separator();
@@ -269,6 +238,17 @@ async fn main() {
             captured_pointer = ctx.wants_pointer_input();
             captured_keyboard = ctx.wants_keyboard_input();
         });
+
+        if scene_changed {
+            sim = scenes[current_scene_index].create_world_state();
+            simulator = sim.create_simulator(60.);
+            let _ = simulator.step();
+            simulator_finished = false;
+            step_count = 1;
+            time = 0.;
+            max_t_text = format!("{:.02}", simulator.max_time());
+            scene_changed = false;
+        }
 
         if !captured_keyboard {
             if is_key_pressed(KeyCode::R) {
