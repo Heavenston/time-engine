@@ -1,4 +1,8 @@
 #![feature(iter_collect_into)]
+#![feature(generic_const_exprs)]
+#![feature(try_blocks)]
+
+#![allow(incomplete_features)]
 
 mod world_state;
 pub use world_state::*;
@@ -10,6 +14,12 @@ mod timeline_id;
 pub use timeline_id::*;
 mod immutable_util;
 pub(crate) use immutable_util::*;
+
+const fn n_elements_for_stack<T>() -> usize {
+    std::mem::size_of::<T>() / std::mem::size_of::<Vec<T>>()
+}
+
+pub(crate) type AutoTinyVec<T> = smallvec::SmallVec<T, { n_elements_for_stack::<T>() }>;
 
 // pub const DEFAULT_EPSILON: f32 = parry2d::math::DEFAULT_EPSILON;
 pub const DEFAULT_EPSILON: f32 = 0.001;

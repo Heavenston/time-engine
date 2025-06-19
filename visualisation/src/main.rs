@@ -22,35 +22,48 @@ async fn main() {
     let sim = {
         let mut sim = te::WorldState::new(100., 100.);
         sim.push_portal(te::Portal {
-            height: 20.,
+            height: 15.,
             in_transform: Affine2::from_angle_translation(
                 std::f32::consts::PI,
-                Vec2::new(90., 50.),
+                Vec2::new(25., 70.),
             ),
             out_transform: Affine2::from_angle_translation(
-                std::f32::consts::FRAC_PI_2,
-                Vec2::new(50., 90.),
+                std::f32::consts::PI,
+                Vec2::new(25., 30.),
             ),
-            time_offset: 2.5,
+            time_offset: 0.,
         });
+        //  sim.push_portal(te::Portal {
+        //     height: 20.,
+        //     in_transform: Affine2::from_angle_translation(
+        //         std::f32::consts::PI,
+        //         Vec2::new(98., 50.),
+        //     ),
+        //     out_transform: Affine2::from_angle_translation(
+        //         std::f32::consts::FRAC_PI_2,
+        //         Vec2::new(50., 98.),
+        //     ),
+        //     // time_offset: 2.5,
+        //     time_offset: 0.,
+        // });
         // sim.push_sphere(te::Sphere {
         //     initial_pos: glam::Vec2::new(50., 50.),
-        //     initial_velocity: glam::Vec2::new(-30., 0.),
+        //     initial_velocity: glam::Vec2::new(30., 0.),
         //     radius: 3.,
         //     ..Default::default()
         // });
         sim.push_sphere(te::Sphere {
-            initial_pos: glam::Vec2::new(50., 3.), 
+            initial_pos: glam::Vec2::new(27., 30.), 
+            initial_velocity: glam::Vec2::new(0., 0.),
+            radius: 3.,
+            ..Default::default()
+        });
+        sim.push_sphere(te::Sphere {
+            initial_pos: glam::Vec2::new(32., 3.),
             initial_velocity: glam::Vec2::new(0., 30.),
             radius: 3.,
             ..Default::default()
         });
-        // sim.push_sphere(te::Sphere {
-        //     initial_pos: glam::Vec2::new(80., 50.),
-        //     initial_velocity: glam::Vec2::new(-10., 0.),
-        //     radius: 3.,
-        //     ..Default::default()
-        // });
         sim
     };
 
@@ -60,10 +73,11 @@ async fn main() {
     let mut cam_offset = Vec2::ZERO;
     let mut zoom = 1.;
     let mut enable_debug_rendering = false;
-    let mut is_paused = false;
+    let mut is_paused = true;
     let mut time = 0.;
     let mut speed = 1.;
     let mut max_t_text = format!("{:.02}", simulator.max_time());
+    let mut simulator_finished = false;
 
     let mouse_pos = |camera: &Camera2D| {
         camera.screen_to_world(Vec2::new(mouse_position().0, mouse_position().1))
@@ -84,7 +98,15 @@ async fn main() {
 
     loop {
         // Forward simulation
-        let (min_time, max_time) = simulator.minmax_time();
+        let min_time = simulator.snapshots().nodes()
+            .map(|(_, node)| node.snapshot.time)
+            .min_by_key(|&t| OF(t))
+            .unwrap_or(0.);
+        let max_time = simulator.snapshots().nodes()
+            .filter(|(_, node)| node.age_children.is_empty())
+            .map(|(_, node)| node.snapshot.time)
+            .max_by_key(|&t| OF(t))
+            .unwrap_or(0.);
 
         if !is_paused && time <= max_time {
             time += get_frame_time() * speed;
@@ -98,14 +120,14 @@ async fn main() {
             is_paused = true;
         }
         else if time > max_time {
-            if simulator.finished() {
+            if simulator_finished {
                 time = max_time;
                 is_paused = true;
             }
             else {
                 step_count += 1;
-                let _ = simulator.step();
-                if simulator.finished() {
+                if simulator.step().is_break() {
+                    simulator_finished = true;
                     simulator.extrapolate_to(simulator.max_time());
                 }
             }
@@ -165,7 +187,7 @@ async fn main() {
                     });
                     ui.horizontal(|ui| {
                         ui.label("Finished simulating:");
-                        if simulator.finished() {
+                        if simulator_finished {
                             ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
                         }
                         else {
@@ -184,14 +206,19 @@ async fn main() {
                     ui.horizontal(|ui| {
                         if ui.button("Full Reset").clicked() {
                             simulator = sim.create_simulator(simulator.max_time());
+                            simulator_finished = false;
+                            step_count = 0;
                         }
                         if ui.button("Full Simulate").clicked() {
+                            simulator_finished = true;
                             simulator.run();
                             simulator.extrapolate_to(simulator.max_time());
                         }
                         let response = ui.add(egui::TextEdit::singleline(&mut max_t_text));
                         if response.lost_focus() && let Ok(max_t) = max_t_text.parse::<f32>() {
                             simulator = sim.create_simulator(max_t);
+                            simulator_finished = false;
+                            step_count = 0;
                             max_t_text = format!("{max_t:.02}");
                         }
                     });
@@ -232,8 +259,6 @@ async fn main() {
                     .map(|(_, link)| simulator.snapshots()[link].time)
                     .minmax_by_key(|&t| OF(t)).into_option().unwrap_or_default();
                 ui.label(format!("Queryied: {q_min} - {q_max}"));
-                ui.separator();
-                ui.label(format!("{:#?}", simulator.timelines_present));
                 ui.separator();
                 ui.label(format!("{:#?}", simulator.multiverse()));
             });

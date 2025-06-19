@@ -160,6 +160,36 @@ impl SimSnapshot {
             })
     }
 
+    pub fn unghostify(mut self) -> Self {
+        self.portal_traversals.into_iter().enumerate()
+            .for_each(|(i, traversal)| {
+                let in_trans = traversal.portal_in.transform.inverse();
+                let out_trans = traversal.portal_out.transform;
+
+                let rel_pos = in_trans.transform_point2(self.pos);
+                let is_ghost = if traversal.direction.is_front() {
+                    rel_pos.x > DEFAULT_EPSILON
+                }
+                else {
+                    rel_pos.x < -DEFAULT_EPSILON
+                };
+                if !is_ghost { return; }
+
+                self.vel = out_trans.transform_vector2(
+                    in_trans.transform_vector2(self.vel)
+                );
+                self.pos = traversal.portal_out.transform.transform_point2(
+                    rel_pos
+                );
+
+                self.time += traversal.time_offset();
+                self.portal_traversals[i] = traversal.swap();
+            });
+
+        debug_assert!(!self.is_ghost());
+        self
+    }
+
     pub fn get_ghosts(self) -> impl Iterator<Item = GhostInfo> {
         // FIXME: probably incorrect for >1 portal traversals
         // (asserts just as reminder of this fact)
@@ -189,7 +219,7 @@ impl SimSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SimSnapshotLink {
     idx: usize,
 }

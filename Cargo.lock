@@ -1238,6 +1238,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8917285742e9f3e1683f0a9c4e6b57960b7314d0b08d30d1ecd426713ee2eee9"
 
 [[package]]
+name = "smallvec"
+version = "2.0.0-alpha.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87b96efa4bd6bdd2ff0c6615cc36fc4970cbae63cfd46ddff5cee35a1b4df570"
+
+[[package]]
 name = "smithay-client-toolkit"
 version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1341,6 +1347,7 @@ name = "time-engine"
 version = "0.1.0"
 dependencies = [
  "arbitrary-int",
+ "arrayvec",
  "glam",
  "i_overlay",
  "i_triangle",
@@ -1349,6 +1356,7 @@ dependencies = [
  "ordered-float",
  "parking_lot",
  "parry2d",
+ "smallvec 2.0.0-alpha.11",
  "tinyvec",
 ]
 

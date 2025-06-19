@@ -1,9 +1,12 @@
-use std::{ collections::HashMap, iter::{empty, once}, ops::{ ControlFlow, Range, RangeFrom } };
+use std::{
+    cmp::max,
+    iter::{ empty, once, repeat },
+    ops::{ BitAnd, ControlFlow, Range, RangeFrom }
+};
 
 use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
 use ordered_float::OrderedFloat as OF;
-use std::cmp::max;
 use nalgebra as na;
 
 use super::*;
@@ -35,44 +38,123 @@ struct SimSphereCollision<const N: usize> {
     #[allow(dead_code)]
     debug_reason: &'static str,
     impact_time: f32,
+    impact_delta_time: f32,
     states: [SimSphereNewState; N],
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SimLinkedSnapshot<'a> {
+struct SimLinkedSnapshot {
     link: SimSnapshotLink,
-    snap: &'a SimSnapshot,
+    snap: SimSnapshot,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SimCollisionInfo<'a, const N: usize> {
+struct SimCollisionInfo<const N: usize> {
     col: SimSphereCollision<N>,
-    snaps: [SimLinkedSnapshot<'a>; N],
+    snaps: [SimLinkedSnapshot; N],
+}
+
+impl<const N: usize> SimCollisionInfo<N> {
+    fn get_snap(&self, i: usize) -> (SimSnapshotLink, SimSnapshot) {
+        assert!(i < N);
+
+        let link = self.snaps[i].link;
+        let snap = self.snaps[i].snap.advanced(self.col.impact_time, self.col.states[i].pos, self.col.states[i].vel)
+            .with_portal_traversals(self.col.states[i].portal_traversals)
+            .offset_time(self.col.states[i].time_offset);
+
+        (link, snap)
+    }
+
+    fn child_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
+        assert!(N > 0);
+        debug_assert!(
+            self.snaps.iter().map(|snap| snap.snap.timeline_id)
+                .tuple_windows::<(_, _)>()
+                .all(|(a, b)| multiverse.is_related(a, b))
+        );
+        self.snaps.iter()
+            .map(|snap| snap.snap.timeline_id)
+            .max()
+            .expect("No empty")
+    }
+
+    fn parent_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
+        assert!(N > 0);
+        debug_assert!(
+            self.snaps.iter().map(|snap| snap.snap.timeline_id)
+                .tuple_windows::<(_, _)>()
+                .all(|(a, b)| multiverse.is_related(a, b))
+        );
+        self.snaps.iter()
+            .map(|snap| snap.snap.timeline_id)
+            .min()
+            .expect("No empty")
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
-enum SimGenericCollisionInfo<'a> {
-    One(SimCollisionInfo<'a, 1>),
-    Two(SimCollisionInfo<'a, 2>),
+enum SimGenericCollisionInfo {
+    One(SimCollisionInfo<1>),
+    Two(SimCollisionInfo<2>),
 }
 
-impl<'a> SimGenericCollisionInfo<'a> {
+impl SimGenericCollisionInfo {
     fn impact_time(&self) -> f32 {
         match self {
             Self::One(i) => i.col.impact_time,
             Self::Two(i) => i.col.impact_time,
         }
     }
+
+    fn impact_delta_time(&self) -> f32 {
+        match self {
+            Self::One(i) => i.col.impact_delta_time,
+            Self::Two(i) => i.col.impact_delta_time,
+        }
+    }
+
+    fn simple_debug(&self) -> String {
+        match self {
+            SimGenericCollisionInfo::One(info) => {
+                format!("one({}, {}s, idx {})", info.col.debug_reason, info.col.impact_time, info.snaps[0].snap.original_idx)
+            },
+            SimGenericCollisionInfo::Two(info) => {
+                format!("two({}, {}s, idx {} on idx {})", info.col.debug_reason, info.col.impact_time, info.snaps[0].snap.original_idx, info.snaps[1].snap.original_idx)
+            },
+        }
+    }
+
+    fn links(&self) -> arrayvec::ArrayVec<SimSnapshotLink, 2> {
+        match self {
+            SimGenericCollisionInfo::One(info) => info.snaps.iter().map(|snap| snap.link).collect(),
+            SimGenericCollisionInfo::Two(info) => info.snaps.iter().map(|snap| snap.link).collect(),
+        }
+    }
+
+    fn child_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
+        match self {
+            SimGenericCollisionInfo::One(sim) => sim.child_timeline(multiverse),
+            SimGenericCollisionInfo::Two(sim) => sim.child_timeline(multiverse),
+        }
+    }
+
+    fn parent_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
+        match self {
+            SimGenericCollisionInfo::One(sim) => sim.parent_timeline(multiverse),
+            SimGenericCollisionInfo::Two(sim) => sim.parent_timeline(multiverse),
+        }
+    }
 }
 
-impl<'a> From<SimCollisionInfo<'a, 1>> for SimGenericCollisionInfo<'a> {
-    fn from(value: SimCollisionInfo<'a, 1>) -> Self {
+impl From<SimCollisionInfo<1>> for SimGenericCollisionInfo {
+    fn from(value: SimCollisionInfo<1>) -> Self {
         Self::One(value)
     }
 }
 
-impl<'a> From<SimCollisionInfo<'a, 2>> for SimGenericCollisionInfo<'a> {
-    fn from(value: SimCollisionInfo<'a, 2>) -> Self {
+impl From<SimCollisionInfo<2>> for SimGenericCollisionInfo {
+    fn from(value: SimCollisionInfo<2>) -> Self {
         Self::Two(value)
     }
 }
@@ -113,6 +195,13 @@ impl SimTimeRange {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        match self {
+            SimTimeRange::Range(range) => range.start >= range.end,
+            SimTimeRange::RangeFrom(_) => false,
+        }
+    }
+
     pub fn contains(&self, val: f32) -> bool {
         val >= self.start() && self.end().is_none_or(|end| val < end)
     }
@@ -143,6 +232,23 @@ impl From<RangeFrom<f32>> for SimTimeRange {
     }
 }
 
+impl BitAnd for SimTimeRange {
+    type Output = SimTimeRange;
+
+    /// Returns a range for values that are in both ranges
+    fn bitand(self, rhs: Self) -> Self::Output {
+        let start = self.start().max(rhs.start());
+        let end = self.end()
+            .zip(rhs.end())
+            .map(|(lhs, rhs)| f32::min(lhs, rhs))
+            .or(rhs.end());
+        // Makes sure start <= end
+        let start = end.unwrap_or(start).max(start);
+
+        Self::new(start, end)
+    }
+}
+
 pub struct TimelineQueryResult {
     pub previous_snapshots: Vec<SimSnapshotLink>,
     pub next_snapshot: Option<SimSnapshotLink>,
@@ -159,8 +265,6 @@ pub struct Simulator<'a> {
     portals: Vec<SimPortal>,
 
     max_time: f32,
-
-    pub timelines_present: HashMap<TimelineId, f32>,
 }
 
 impl<'a> Simulator<'a> {
@@ -199,18 +303,6 @@ impl<'a> Simulator<'a> {
             });
         }
 
-        let timelines_present: HashMap<TimelineId, f32> = starts.iter()
-            .map(|&link| {
-                let snap = &snapshots[link];
-                (snap.timeline_id, snap.time)
-            })
-            .fold(HashMap::<TimelineId, f32>::new(), |mut map, (tid, time)| {
-                map.entry(tid)
-                    .and_modify(|e| { *e = time.min(*e); })
-                    .or_insert(time);
-                map
-            });
-
         Self {
             world_state,
             multiverse,
@@ -220,8 +312,6 @@ impl<'a> Simulator<'a> {
             portals,
 
             max_time,
-
-            timelines_present,
         }
     }
 
@@ -238,30 +328,6 @@ impl<'a> Simulator<'a> {
         self.max_time
     }
 
-    pub fn minmax_time(&self) -> (f32, f32) {
-        let min = self.snapshots.nodes().map(|(_, node)| node.snapshot.time)
-            .min_by_key(|&t| OF(t))
-            .unwrap_or(0.);
-
-        // TODO: Which one
-        // let max = self.snapshots.nodes().map(|(_, node)| node)
-        //     .filter(|node| node.age_children.is_empty())
-        //     .map(|node| (node.snapshot.timeline_id, node.snapshot.time))
-        //     .fold(HashMap::<TimelineId, f32>::new(), |mut map, (timeline_id, time)| {
-        //         map.entry(timeline_id)
-        //             .and_modify(|t| *t = f32::min(*t, time))
-        //             .or_insert(time);
-        //         map
-        //     })
-        //     .into_values()
-        //     .max_by_key(|&t| OF(t));
-        let max = self.timelines_present.values().copied()
-            .reduce(f32::min)
-            .unwrap_or(self.max_time);
-
-        (min, max)
-    }
-
     fn node_has_children(&self, link: SimSnapshotLink, timeline_id: TimelineId) -> bool {
         let Some(node) = self.snapshots.get_node(link)
         else { return false; };
@@ -270,6 +336,7 @@ impl<'a> Simulator<'a> {
             .any(|&child_link| self.multiverse.is_related(self.snapshots[child_link].timeline_id, timeline_id))
     }
 
+    #[inline(always)]
     fn get_node_time_ranges<'b>(&'b self, link: SimSnapshotLink, timeline_id: Option<TimelineId>) -> (SimTimeRange, impl Iterator<Item = SimTimeRange> + 'b) {
         let node = self.snapshots.get_node(link).expect("Valid link");
         let snap = node.snapshot;
@@ -282,7 +349,7 @@ impl<'a> Simulator<'a> {
         ;
 
         let range = SimTimeRange::new(snap.time, end_time);
-        let range_ = SimTimeRange::new(snap.time, end_time);
+        let range_ = range.clone();
         let iterator = snap.portal_traversals.into_iter()
             .filter_map(move |traversal| {
                 range_.offset(traversal.time_offset())
@@ -307,11 +374,8 @@ impl<'a> Simulator<'a> {
         result
     }
 
-    /// Giving None as the time returns all nodes with no children on the given timeline
-    /// Giving Some returns all nodes that covers the given time
-    pub fn timeline_query(&self, time: Option<f32>, timeline_id: TimelineId) -> TimelineQueryResult {
-        debug_assert!(self.starts.iter().copied().all_unique());
-
+    /// Return an iterator of all nodes that are in the given timeline
+    pub fn timeline_query(&self, timeline_id: TimelineId) -> impl Iterator<Item = SimSnapshotLink> + Clone + '_ {
         #[derive(Debug, Clone, Copy)]
         struct StackEntry {
             link: SimSnapshotLink,
@@ -327,70 +391,50 @@ impl<'a> Simulator<'a> {
             })
             .collect_vec();
 
-        let mut previous_snapshots = Vec::new();
-        let mut next_snapshot = None::<SimSnapshotLink>;
+        std::iter::from_fn(move || {
+            while let Some(StackEntry { link, is_in_timeline }) = stack.pop() {
+                debug_assert!(stack.iter().copied()
+                    .map(|entry| entry.link)
+                    .all_unique());
 
-        while let Some(StackEntry { link, is_in_timeline }) = stack.pop() {
-            let node = self.snapshots.get_node(link).expect("Valid");
+                let node = self.snapshots.get_node(link).expect("Valid");
 
-            if is_in_timeline {
-                let children = node.age_children.iter().copied()
-                    // take the distance of each child's timeline with the target timeline
-                    .filter_map(|child_link| self.multiverse.distance(self.snapshots[child_link].timeline_id, timeline_id)
-                        // checks that it is a parent
-                        .and_then(|distance| (distance >= 0).then_some(distance))
-                        .map(|distance| (child_link, distance)))
-                    .collect_vec()
-                ;
-                let min_distance = children.iter()
-                    .map(|&(_, distance)| distance)
-                    .min();
+                if is_in_timeline {
+                    let children = node.age_children.iter().copied()
+                        // take the distance of each child's timeline with the target timeline
+                        .filter_map(|child_link| self.multiverse.distance(self.snapshots[child_link].timeline_id, timeline_id)
+                            // checks that it is a parent
+                            .and_then(|distance| (distance >= 0).then_some(distance))
+                            .map(|distance| (child_link, distance)))
+                        .collect_vec()
+                    ;
+                    let min_distance = children.iter()
+                        .map(|&(_, distance)| distance)
+                        .min();
 
-                // This checks that if the snapshot represent the correct time
-                // interval for this timeline we add it to the results
-                if let Some(time) = time {
-                    // TODO: Handle ghosts ranges too
-                    let (range, _) = self.get_node_time_ranges(link, Some(timeline_id));
-                    if range.start() > time && next_snapshot.is_none_or(|next| self.snapshots[next].time < time) {
-                        next_snapshot = Some(link);
-                    }
-                    if range.contains(time) {
-                        previous_snapshots.push(link);
-                    }
+                    children.iter()
+                        .map(|&(link, distance)| StackEntry {
+                            link,
+                            is_in_timeline: distance == min_distance.expect("Non empty")
+                        })
+                        .collect_into(&mut stack);
+
+                    return Some(link);
                 }
                 else {
-                    if node.age_children.is_empty() { // FIXME: Is this sufficient? This may miss some nodes
-                        previous_snapshots.push(link);
-                    }
+                    node.age_children.iter().copied()
+                        .map(|child_link| (child_link, self.snapshots[child_link].timeline_id))
+                        .filter(|&(_, child_timeline_id)| self.multiverse.is_parent(child_timeline_id, timeline_id))
+                        .map(|(child_link, child_timeline_id)| StackEntry {
+                            link: child_link,
+                            is_in_timeline: child_timeline_id == timeline_id
+                        })
+                        .collect_into(&mut stack);
                 }
-
-                children.iter()
-                    .map(|&(link, distance)| StackEntry {
-                        link,
-                        is_in_timeline: distance == min_distance.expect("Non empty")
-                    })
-                    .collect_into(&mut stack);
-            }
-            else {
-                node.age_children.iter().copied()
-                    .map(|child_link| (child_link, self.snapshots[child_link].timeline_id))
-                    .filter(|&(_, child_timeline_id)| self.multiverse.is_parent(child_timeline_id, timeline_id))
-                    .map(|(child_link, child_timeline_id)| StackEntry {
-                        link: child_link,
-                        is_in_timeline: child_timeline_id == timeline_id
-                    })
-                    .collect_into(&mut stack);
             }
 
-            debug_assert!(stack.iter().copied()
-                .map(|entry| entry.link)
-                .all_unique());
-        }
-
-        TimelineQueryResult {
-            previous_snapshots,
-            next_snapshot,
-        }
+            None
+        })
     }
 
     fn cast_sphere_wall_collision(&self, snap: &SimSnapshot) -> Option<SimSphereCollision<1>> {
@@ -420,12 +464,13 @@ impl<'a> Simulator<'a> {
         Some(SimSphereCollision {
             debug_reason: "sphere-wall",
             impact_time,
+            impact_delta_time: impact_dt,
             states: [SimSphereNewState { vel: new_vel, pos: new_pos, ..default() }]
         })
     }
 
     fn cast_sphere_sphere_collision(&self, s1: &SimSnapshot, s2: &SimSnapshot) -> Option<SimSphereCollision<2>> {
-        debug_assert_eq!(s1.time, s2.time);
+        debug_assert!((s1.time - s2.time).abs() <= DEFAULT_EPSILON);
         debug_assert!(self.multiverse.is_related(s1.timeline_id, s2.timeline_id));
 
         // NOTE: Generated by claude-4-sonnet
@@ -493,6 +538,7 @@ impl<'a> Simulator<'a> {
         Some(SimSphereCollision {
             debug_reason: "sphere-sphere",
             impact_time: s1.time + impact_dt,
+            impact_delta_time: impact_dt,
             states: [
                 SimSphereNewState { vel: vel1, pos: pos1, ..default() },
                 SimSphereNewState { vel: vel2, pos: pos2, ..default() },
@@ -531,9 +577,10 @@ impl<'a> Simulator<'a> {
                 stop_at_penetration: true,
                 ..default()
             }
-        ).expect("Ball on ball should be supported")?;
+        ).expect("supported")?;
 
-        let impact_time = result.time_of_impact + snap.time;
+        let impact_dt = result.time_of_impact;
+        let impact_time = impact_dt + snap.time;
         let direction = if result.normal1.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
 
         let vel = snap.vel;
@@ -550,6 +597,7 @@ impl<'a> Simulator<'a> {
         Some(SimSphereCollision {
             debug_reason: "sphere-portal-start",
             impact_time,
+            impact_delta_time: impact_dt,
             states: [SimSphereNewState {
                 vel, pos,
                 portal_traversals: tinyvec::array_vec!(_ => traversal),
@@ -585,6 +633,7 @@ impl<'a> Simulator<'a> {
         Some(SimSphereCollision {
             debug_reason: "sphere-portal-end",
             impact_time,
+            impact_delta_time: impact_dt,
             states: [SimSphereNewState {
                 vel: traveled_vel, pos: traveled_pos,
                 portal_traversals: tinyvec::array_vec!(_ => traversal.swap()),
@@ -593,56 +642,45 @@ impl<'a> Simulator<'a> {
         })
     }
 
-    pub fn finished(&self) -> bool {
-        self.timelines_present.is_empty()
-    }
+    fn next_collision_for_snap(
+        &self,
+        link: SimSnapshotLink,
+        snap: SimSnapshot,
+    ) -> Option<SimGenericCollisionInfo> {
+        let timeline_id = snap.timeline_id;
 
-    pub fn step(&mut self) -> ControlFlow<SimStepBreakReason, ()> {
-        let Some((&timeline_id, &time)) = self.timelines_present.iter()
-            .min_by_key(|&(_, &t)| OF(t))
-        else { return ControlFlow::Break(SimStepBreakReason::Finished) };
-
-        let time = time + DEFAULT_EPSILON;
-
-        if time >= self.max_time {
-            return ControlFlow::Break(SimStepBreakReason::Finished);
-        }
-
-        let query = self.timeline_query(Some(time), timeline_id);
-        let next_snapshot_time = query.next_snapshot
-            .map(|link| self.snapshots[link].time);
-
-        let snapshots = query.previous_snapshots.into_iter()
-            .map(|link| (link, self.snapshots[link]))
-            .filter(|(_, snap)| snap.time <= time)
-            .map(|(link, snap)| (link, snap.extrapolate(time)))
-            .collect_vec()
+        let world: AutoTinyVec<(SimSnapshotLink, SimSnapshot)> =
+            self.timeline_query(snap.timeline_id)
+            .filter(|&link_| link != link_)
+            .filter(|&link_| {
+                let (range_, ranges_) = self.get_node_time_ranges(link_, Some(timeline_id));
+                once(range_).chain(ranges_)
+                    .any(|r| r.contains(snap.time))
+            })
+            .map(|link| (link, self.snapshots[link].extrapolate(snap.time)))
+            .collect()
+        ;
+        // Find a snapshot that already exist and is in the future
+        // It means we cannot expect the current snapshot to be valid after this
+        // time
+        let next_snapshot_time: Option<f32> =
+            self.timeline_query(snap.timeline_id)
+            .filter(|&link_| link != link_)
+            .flat_map(|link_| {
+                let (range_, ranges_) = self.get_node_time_ranges(link_, Some(timeline_id));
+                once(range_).chain(ranges_)
+                    .map(|r| r.start())
+            })
+            .filter(|&r| r > snap.time)
+            .min_by_key(|&r| OF(r))
         ;
 
-        let new_snapshots = snapshots.iter().copied()
-            .filter(|&(link, _)| !self.node_has_children(link, timeline_id))
-            .collect_vec()
-        ;
-
-        // No snapshots means we are too 'early' in the timeline so we need to find
-        // the latest time there is something to do
-        if new_snapshots.is_empty() {
-            let new_min = self.timeline_query(None, timeline_id).previous_snapshots.into_iter()
-                .map(|link| self.snapshots[link].time)
-                .reduce(f32::min);
-            if let Some(new_min) = new_min {
-                self.timelines_present.insert(timeline_id, new_min);
-            }
-            else {
-                self.timelines_present.remove(&timeline_id);
-            }
-            return ControlFlow::Continue(());
-        }
+        println!("next_snapshot_time = {next_snapshot_time:?}");
 
         let collision_infos = empty::<SimGenericCollisionInfo>()
             .chain(
-                new_snapshots.iter().map(|(l, s)| (*l, s))
-                .filter_map(|(link, snap)| self.cast_sphere_wall_collision(snap)
+                once((link, snap))
+                .filter_map(|(link, snap)| self.cast_sphere_wall_collision(&snap)
                     .map(|col| SimCollisionInfo {
                         col,
                         snaps: [SimLinkedSnapshot { link, snap }]
@@ -651,10 +689,9 @@ impl<'a> Simulator<'a> {
                 )
             )
             .chain(
-                snapshots.iter().map(|(l, s)| (*l, s))
-                .tuple_combinations::<(_, _)>()
-                .filter(|&((l1, _), (l2, _))| !self.node_has_children(l1, timeline_id) || !self.node_has_children(l2, timeline_id))
-                .filter_map(|((l1, s1), (l2, s2))| self.cast_sphere_sphere_collision(s1, s2)
+                once((link, snap))
+                .cartesian_product(world.iter().copied())
+                .filter_map(|((l1, s1), (l2, s2))| self.cast_sphere_sphere_collision(&s1, &s2)
                     .map(|col| SimCollisionInfo {
                         col,
                         snaps: [
@@ -666,9 +703,9 @@ impl<'a> Simulator<'a> {
                 )
             )
             .chain(
-                new_snapshots.iter().map(|(l, s)| (*l, s))
+                once((link, snap))
                 .cartesian_product(0..self.portals.len())
-                .filter_map(|((l1, s1), portal_idx)| self.cast_sphere_portal_traversal_start(s1, portal_idx)
+                .filter_map(|((l1, s1), portal_idx)| self.cast_sphere_portal_traversal_start(&s1, portal_idx)
                     .map(|col| SimCollisionInfo {
                         col,
                         snaps: [SimLinkedSnapshot { link: l1, snap: s1 }]
@@ -677,9 +714,9 @@ impl<'a> Simulator<'a> {
                 )
             )
             .chain(
-                new_snapshots.iter().map(|(l, s)| (*l, s))
+                once((link, snap))
                 .cartesian_product(0..self.portals.len())
-                .filter_map(|((l1, s1), portal_idx)| self.cast_sphere_portal_traversal_end(s1, portal_idx)
+                .filter_map(|((l1, s1), portal_idx)| self.cast_sphere_portal_traversal_end(&s1, portal_idx)
                     .map(|col| SimCollisionInfo {
                         col,
                         snaps: [SimLinkedSnapshot { link: l1, snap: s1 }]
@@ -688,82 +725,102 @@ impl<'a> Simulator<'a> {
                 )
             )
             .filter(|result|
-                result.impact_time() <= self.max_time &&
-                next_snapshot_time.is_none_or(|next_time| result.impact_time() <= next_time)
+                result.impact_time() <= self.max_time
+                // && next_snapshot_time.is_none_or(|next_time| result.impact_time() <= next_time)
             )
-            .min_set_by_key(|result| OF(result.impact_time()))
+            .min_set_by_key(|result| OF(result.impact_delta_time()))
         ;
 
-        if let Some(next_time) = next_snapshot_time {
-            self.timelines_present.insert(timeline_id, next_time);
+        assert!(collision_infos.len() <= 1);
+        
+        println!(
+            "{} collisions for idx {} from {}s at {}s ({}, {})x({}, {})",
+            if collision_infos.is_empty() { "No" } else { "One" },
+            snap.original_idx, snap.time,
+            collision_infos.first().map(|t| t.impact_time()).unwrap_or(f32::INFINITY),
+            snap.pos.x, snap.pos.y,
+            snap.vel.x, snap.vel.y,
+        );
+        if collision_infos.is_empty() {
+            None
         }
         else {
-            self.timelines_present.remove(&timeline_id);
+            Some(collision_infos[0])
         }
+    }
 
-        let (ones_collisions, twos_collisions): (Vec::<_>, Vec::<_>) = collision_infos.into_iter()
-            .partition_map(|h| match h {
-                SimGenericCollisionInfo::One(i1) => itertools::Either::Left(i1),
-                SimGenericCollisionInfo::Two(i2) => itertools::Either::Right(i2),
-            });
+    fn apply_collision_1(&mut self, info: SimCollisionInfo<1>) {
+        let (link, snap) = info.get_snap(0);
+        self.snapshots.insert(&self.multiverse, snap, Some(link));
+    }
 
-        for info in ones_collisions {
-            let new_snapshot = info.snaps[0].snap.advanced(info.col.impact_time, info.col.states[0].pos, info.col.states[0].vel)
-                .with_portal_traversals(info.col.states[0].portal_traversals)
-                .offset_time(info.col.states[0].time_offset);
-            self.snapshots.insert(&self.multiverse, new_snapshot, Some(info.snaps[0].link));
+    fn apply_collision_2(&mut self, info: SimCollisionInfo<2>) {
+        let (link0, new_snapshot0) = info.get_snap(0);
+        let (link1, new_snapshot1) = info.get_snap(1);
+        let child_timeline = info.child_timeline(&self.multiverse);
 
-            let new_time = [info.col.impact_time, info.col.impact_time + info.col.states[0].time_offset]
-                .into_iter().reduce(f32::min).expect("not empty");
-
-            self.timelines_present.entry(new_snapshot.timeline_id)
-                .and_modify(|t| *t = f32::min(*t, new_time))
-                .or_insert(new_time);
+        let new_timeline = if
+            self.node_has_children(link0, child_timeline) ||
+            self.node_has_children(link1, child_timeline)
+        {
+            self.multiverse.create_children(child_timeline)
         }
+        else {
+            child_timeline
+        };
 
-        for info in twos_collisions {
-            let link0 = info.snaps[0].link;
-            let link1 = info.snaps[1].link;
-            let timeline_id_0 = info.snaps[0].snap.timeline_id;
-            let timeline_id_1 = info.snaps[1].snap.timeline_id;
+        self.snapshots.insert(
+            &self.multiverse,
+            new_snapshot0.replace_timeline(new_timeline),
+            Some(link0)
+        );
+        self.snapshots.insert(
+            &self.multiverse,
+            new_snapshot1.replace_timeline(new_timeline),
+            Some(link1)
+        );
+    }
 
-            debug_assert!(self.multiverse.is_related(timeline_id_0, timeline_id_1));
-            let child_timeline = max(timeline_id_0, timeline_id_1);
-
-            let new_timeline = if
-                self.node_has_children(link0, child_timeline) ||
-                self.node_has_children(link1, child_timeline)
-            {
-                self.multiverse.create_children(child_timeline)
-            }
-            else {
-                child_timeline
-            };
-
-            let new_snapshot0 = info.snaps[0].snap.advanced(info.col.impact_time, info.col.states[0].pos, info.col.states[0].vel)
-                .with_portal_traversals(info.col.states[0].portal_traversals)
-                .offset_time(info.col.states[0].time_offset)
-                .replace_timeline(new_timeline);
-            let new_snapshot1 = info.snaps[1].snap.advanced(info.col.impact_time, info.col.states[1].pos, info.col.states[1].vel)
-                .with_portal_traversals(info.col.states[1].portal_traversals)
-                .offset_time(info.col.states[1].time_offset)
-                .replace_timeline(new_timeline);
-
-            self.snapshots.insert(&self.multiverse, new_snapshot0, Some(link0));
-            self.snapshots.insert(&self.multiverse, new_snapshot1, Some(link1));
-
-            let new_time = [
-                info.col.impact_time,
-                info.col.impact_time + info.col.states[0].time_offset,
-                info.col.impact_time + info.col.states[1].time_offset,
-            ]
-                .into_iter().reduce(f32::min).expect("not empty");
-
-            self.timelines_present.entry(new_timeline)
-                .and_modify(|t| *t = f32::min(*t, new_time))
-                .or_insert(new_time);
+    fn apply_collision(&mut self, info: SimGenericCollisionInfo) {
+        match info {
+            SimGenericCollisionInfo::One(info) => {
+                self.apply_collision_1(info);
+            },
+            SimGenericCollisionInfo::Two(info) => {
+                self.apply_collision_2(info);
+            },
         }
+    }
 
+    pub fn step(&mut self) -> ControlFlow<SimStepBreakReason, ()> {
+        let next_collisions = self.snapshots.nodes()
+            .filter(|(_, node)| node.age_children.is_empty())
+            .flat_map(|(link, node)| {
+                repeat(link).zip(
+                    once(node.snapshot)
+                    .chain(node.snapshot.get_ghosts()
+                        .map(move |ghost| ghost.snapshot))
+                )
+            })
+            .filter_map(|(link, snap)| self.next_collision_for_snap(link, snap))
+            // .unique_by(|col| {
+            //     let mut links = col.links();
+            //     links.sort();
+            //     (OF(col.impact_delta_time()), links)
+            // })
+            .inspect(|h| { println!("option: {}", h.simple_debug()); })
+            // Non trivial at all and may not be correct
+            // what we actually want is the collisions that hat no collisions 'before' it
+            // but with time travel this is non trivial, using the most parent timeline
+            // first seems to be the way but who knows
+            .min_set_by_key(|col| (col.parent_timeline(&self.multiverse), OF(col.impact_time())))
+        ;
+        let Some(next_collision) = next_collisions.first().cloned()
+        else { return ControlFlow::Break(SimStepBreakReason::Finished) };
+        println!("\nchosen: {}\n", next_collision.simple_debug());
+
+        self.apply_collision(next_collision);
+        
         ControlFlow::Continue(())
     }
 
