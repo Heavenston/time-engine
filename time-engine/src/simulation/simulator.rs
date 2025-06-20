@@ -1,72 +1,59 @@
-// TEMP
-#![allow(dead_code)]
-
 use std::{
-    iter::{ empty, once, repeat },
-    ops::{ BitAnd, ControlFlow, Range, RangeFrom },
-    rc::Rc
+    cmp::{ max, min }, collections::HashMap, iter::{ empty, once }, ops::{ BitAnd, ControlFlow, Range, RangeFrom }, sync::Arc
 };
 
+use parking_lot::RwLock;
+use rayon::{ prelude::*, iter as pariter };
 use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
 use ordered_float::OrderedFloat as OF;
 use nalgebra as na;
 
 use super::*;
+use sg::GenericNode as _;
 
 /// All portals are eternal (always existed and will always exist)
-/// and are present in all timelines, except the output which only
-/// exists in output timelines
-///
-/// All timelines are input timelines (as the portal is created at the start of
-/// the simulation and so in all timelines) though not all timelines are output ones
+/// and are present in all timelines
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub struct SimPortal {
+pub struct HalfPortal {
     pub transform: Affine2,
     pub height: f32,
     pub linked_to: usize,
+    /// How much time changes when going from this portal to the linked one
     pub time_offset: f32,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct SimSphereNewState {
+#[derive(Debug, Clone, Default)]
+struct CollisionNewState {
     vel: Vec2,
     pos: Vec2,
-    portal_traversals: tinyvec::ArrayVec<[SimPortalTraversal; 4]>,
-    time_offset: f32,
+    // portal_traversals: AutoSmallVec<sg::PortalTraversal>,
+    // time_offset: f32,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SimSphereCollision<const N: usize> {
-    #[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct Collision<const N: usize> {
     debug_reason: &'static str,
     impact_time: f32,
-    impact_delta_time: f32,
-    states: [SimSphereNewState; N],
+    impact_delta_time: Positive,
+    states: [CollisionNewState; N],
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SimLinkedSnapshot {
-    link: SimSnapshotLink,
-    snap: SimSnapshot,
+#[derive(Debug, Clone)]
+struct SnapshotWithHandle {
+    handle: sg::NodeHandle,
+    snap: sg::Snapshot,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct SimCollisionInfo<const N: usize> {
-    col: SimSphereCollision<N>,
-    snaps: [SimLinkedSnapshot; N],
+    col: Collision<N>,
+    snaps: [SnapshotWithHandle; N],
 }
 
 impl<const N: usize> SimCollisionInfo<N> {
-    fn get_snap(&self, i: usize) -> (SimSnapshotLink, SimSnapshot) {
-        assert!(i < N);
-
-        let link = self.snaps[i].link;
-        let snap = self.snaps[i].snap.advanced(self.col.impact_time, self.col.states[i].pos, self.col.states[i].vel)
-            .with_portal_traversals(self.col.states[i].portal_traversals)
-            .offset_time(self.col.states[i].time_offset);
-
-        (link, snap)
+    fn get_snap(&self, i: usize) -> SnapshotWithHandle {
+        todo!()
     }
 
     fn child_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
@@ -96,7 +83,7 @@ impl<const N: usize> SimCollisionInfo<N> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum SimGenericCollisionInfo {
     One(SimCollisionInfo<1>),
     Two(SimCollisionInfo<2>),
@@ -110,7 +97,7 @@ impl SimGenericCollisionInfo {
         }
     }
 
-    fn impact_delta_time(&self) -> f32 {
+    fn impact_delta_time(&self) -> Positive {
         match self {
             Self::One(i) => i.col.impact_delta_time,
             Self::Two(i) => i.col.impact_delta_time,
@@ -120,18 +107,18 @@ impl SimGenericCollisionInfo {
     fn simple_debug(&self) -> String {
         match self {
             SimGenericCollisionInfo::One(info) => {
-                format!("one({}, {}s, idx {})", info.col.debug_reason, info.col.impact_time, info.snaps[0].snap.original_idx)
+                format!("one({}, {}s, idx {})", info.col.debug_reason, info.col.impact_time, info.snaps[0].snap.object_id)
             },
             SimGenericCollisionInfo::Two(info) => {
-                format!("two({}, {}s, idx {} on idx {})", info.col.debug_reason, info.col.impact_time, info.snaps[0].snap.original_idx, info.snaps[1].snap.original_idx)
+                format!("two({}, {}s, idx {} on idx {})", info.col.debug_reason, info.col.impact_time, info.snaps[0].snap.object_id, info.snaps[1].snap.object_id)
             },
         }
     }
 
-    fn links(&self) -> arrayvec::ArrayVec<SimSnapshotLink, 2> {
+    fn handles(&self) -> AutoSmallVec<sg::NodeHandle> {
         match self {
-            SimGenericCollisionInfo::One(info) => info.snaps.iter().map(|snap| snap.link).collect(),
-            SimGenericCollisionInfo::Two(info) => info.snaps.iter().map(|snap| snap.link).collect(),
+            SimGenericCollisionInfo::One(info) => info.snaps.iter().map(|snap| snap.handle).collect(),
+            SimGenericCollisionInfo::Two(info) => info.snaps.iter().map(|snap| snap.handle).collect(),
         }
     }
 
@@ -160,14 +147,6 @@ impl From<SimCollisionInfo<2>> for SimGenericCollisionInfo {
     fn from(value: SimCollisionInfo<2>) -> Self {
         Self::Two(value)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SimStepBreakReason {
-    /// No collision will in the given time
-    ExceededMaxTime,
-    /// There will be no more collisions, ever
-    Finished,
 }
 
 #[derive(Debug, Clone)]
@@ -252,57 +231,71 @@ impl BitAnd for SimTimeRange {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SimTimeRanges {
+    pub main_range: SimTimeRange,
+    pub ghost_ranges: AutoSmallVec<SimTimeRange>,
+}
+
+impl SimTimeRanges {
+    pub fn contains(&self, val: f32) -> bool {
+        once(&self.main_range).chain(self.ghost_ranges.iter())
+            .any(|range| range.contains(val))
+    }
+}
+
 pub struct TimelineQueryResult {
-    pub previous_snapshots: Vec<SimSnapshotLink>,
-    pub next_snapshot: Option<SimSnapshotLink>,
+    pub before: Vec<sg::NodeHandle>,
+    pub after: Option<sg::NodeHandle>,
 }
 
 #[derive(Debug)]
 pub struct Simulator {
-    world_state: Rc<WorldState>,
+    world_state: Arc<WorldState>,
     multiverse: TimelineMultiverse,
-    snapshots: SimSnapshotContainer,
+    snapshots: sg::SnapshotGraph,
+    // TODO: Use a 'sorted map' since handles are linear...
+    integration_cache: RwLock<HashMap<sg::NodeHandle, Arc<sg::Snapshot>>>,
 
     /// The first snapshot of all spheres
-    starts: Ro<Box<[SimSnapshotLink]>>,
-    portals: Vec<SimPortal>,
+    starts: Ro<Box<[sg::RootNodeHandle]>>,
+    half_portals: Vec<HalfPortal>,
 
     max_time: f32,
 }
 
 impl Simulator {
-    pub fn new(world_state: Rc<WorldState>, max_time: f32) -> Self {
+    pub fn new(world_state: Arc<WorldState>, max_time: f32) -> Self {
         let multiverse = TimelineMultiverse::new();
 
-        let mut snapshots = SimSnapshotContainer::new();
+        let mut snapshots = sg::SnapshotGraph::new();
         let starts = world_state.spheres.iter()
             .enumerate()
-            .map(|(original_idx, sphere)| SimSnapshot {
-                original_idx,
-                radius: sphere.radius,
-                time: 0.,
-                timeline_id: multiverse.root(),
-                age: 0.,
+            .map(|(object_id, sphere)| sg::RootSnapshot {
+                object_id,
+
                 pos: sphere.initial_pos,
-                vel: sphere.initial_velocity,
-                portal_traversals: default(),
+                rot: 0.,
+
+                linvel: sphere.initial_velocity,
+                angvel: 0.,
             })
-            .map(|snapshot| snapshots.insert(&multiverse, snapshot, None))
+            .map(|snapshot| snapshots.insert_root(snapshot))
             .collect_vec();
 
-        let mut portals = Vec::<SimPortal>::new();
+        let mut half_portals = Vec::<HalfPortal>::new();
         for &portal in &world_state.portals {
-            portals.push(SimPortal {
+            half_portals.push(HalfPortal {
                 transform: portal.in_transform,
                 height: portal.height,
-                linked_to: portals.len() + 1,
-                time_offset: 0.,
+                linked_to: half_portals.len() + 1,
+                time_offset: portal.time_offset,
             });
-            portals.push(SimPortal {
+            half_portals.push(HalfPortal {
                 transform: portal.out_transform,
                 height: portal.height,
-                linked_to: portals.len() - 1,
-                time_offset: portal.time_offset,
+                linked_to: half_portals.len() - 1,
+                time_offset: -portal.time_offset,
             });
         }
 
@@ -310,15 +303,16 @@ impl Simulator {
             world_state,
             multiverse,
             snapshots,
+            integration_cache: default(),
 
             starts: starts.clone().into_boxed_slice().into(),
-            portals,
+            half_portals,
 
             max_time,
         }
     }
 
-    pub fn snapshots(&self) -> &SimSnapshotContainer {
+    pub fn snapshots(&self) -> &sg::SnapshotGraph {
         &self.snapshots
     }
 
@@ -331,45 +325,86 @@ impl Simulator {
         self.max_time
     }
 
-    fn node_has_children(&self, link: SimSnapshotLink, timeline_id: TimelineId) -> bool {
-        let Some(node) = self.snapshots.get_node(link)
+    fn node_has_children(&self, handle: sg::NodeHandle, timeline_id: TimelineId) -> bool {
+        let Some(node) = self.snapshots.get(handle)
         else { return false; };
 
-        node.age_children.iter()
-            .any(|&child_link| self.multiverse.is_related(self.snapshots[child_link].timeline_id, timeline_id))
+        node.children().iter()
+            .any(|&child_handle| self.multiverse.is_related(self.snapshots[child_handle].timeline_id(), timeline_id))
+    }
+
+    pub fn integrate(&self, node: sg::NodeHandle) -> Arc<sg::Snapshot> {
+        if let Some(snap) = self.integration_cache.read().get(&node).map(Arc::clone) {
+            return snap;
+        }
+
+        let (snapshot, partial) = match &self.snapshots[node] {
+            sg::Node::Root(root_node) => {
+                return Arc::clone(self.integration_cache.write().entry(node)
+                    .or_insert_with(|| Arc::new(root_node.snapshot.into())));
+            },
+            sg::Node::Inner(inner_node) => (self.integrate(inner_node.previous), inner_node.partial),
+        };
+        debug_assert!(self.multiverse.is_parent(snapshot.timeline_id, partial.timeline_id));
+
+        // TODO: Portal traversals
+
+        Arc::clone(self.integration_cache.write().entry(node).or_insert_with(|| {
+            Arc::new(sg::Snapshot {
+                object_id: snapshot.object_id,
+                timeline_id: partial.timeline_id,
+
+                age: snapshot.age + partial.delta_age,
+                time: snapshot.time + partial.delta_age.get(),
+                extrapolated_by: Positive::new(0.).expect("positive"),
+
+                linvel: partial.linvel,
+                angvel: partial.angvel,
+
+                pos: snapshot.pos + snapshot.linvel * partial.delta_age.get(),
+                rot: snapshot.rot + snapshot.angvel * partial.delta_age.get(),
+
+                portal_traversals: default(),
+            })
+        }))
     }
 
     #[inline(always)]
-    fn get_node_time_ranges<'b>(&'b self, link: SimSnapshotLink, timeline_id: Option<TimelineId>) -> (SimTimeRange, impl Iterator<Item = SimTimeRange> + 'b) {
-        let node = self.snapshots.get_node(link).expect("Valid link");
-        let snap = node.snapshot;
-        let end_time = node.age_children.iter().copied()
-            .filter(|&child_link| timeline_id.is_none_or(|timeline_id| self.multiverse.is_parent(self.snapshots[child_link].timeline_id, timeline_id)))
-            .map(|child_link| self.snapshots[child_link].age)
-            .reduce(f32::max)
-            .map(|next_age| next_age - snap.age)
-            .map(|age_diff| snap.time + age_diff)
+    fn get_node_time_ranges<'b>(&'b self, handle: sg::NodeHandle, timeline_id: Option<TimelineId>) -> SimTimeRanges {
+        let node = &self.snapshots[handle];
+        let snap = self.integrate(handle);
+        let max_delta_age = node.children().iter().copied()
+            .filter(|&child_link| timeline_id.is_none_or(|timeline_id| self.multiverse.is_parent(self.snapshots[child_link].timeline_id(), timeline_id)))
+            .map(|child_link| self.snapshots[child_link].partial.delta_age)
+            .max()
         ;
+        let end_time = max_delta_age.map(|dt| snap.time + dt.get());
 
         let range = SimTimeRange::new(snap.time, end_time);
-        let range_ = range.clone();
-        let iterator = snap.portal_traversals.into_iter()
-            .filter_map(move |traversal| {
-                range_.offset(traversal.time_offset())
-                    .up_to(traversal.end_age - snap.age + snap.time + traversal.time_offset())
-            })
-        ;
+        // TODO
+        // let range_ = range.clone();
+        // let iterator = snap.portal_traversals.into_iter()
+        //     .filter_map(move |traversal| {
+        //         let offset = self.half_portals[traversal.half_portal_idx].time_offset;
+        //         range_.offset(offset)
+        //             .up_to(traversal.end_age - snap.age + snap.time + traversal.time_offset())
+        //     })
+        // ;
+        let iterator = empty();
 
-        (range, iterator)
+        SimTimeRanges {
+            main_range: range,
+            ghost_ranges: iterator.collect(),
+        }
     }
 
-    pub fn time_query(&self, time: f32) -> Vec<(SimTimeRange, SimSnapshotLink)> {
+    pub fn time_query(&self, time: f32) -> Vec<(SimTimeRanges, sg::NodeHandle)> {
         debug_assert!(self.starts.iter().copied().all_unique());
         let mut result = Vec::new();
 
         for (link, _) in self.snapshots.nodes() {
-            let (range, time_ranges) = self.get_node_time_ranges(link, None);
-            if once(range.clone()).chain(time_ranges).any(|range| range.contains(time)) {
+            let range = self.get_node_time_ranges(link, None);
+            if range.contains(time) {
                 result.push((range, link));
             }
         }
@@ -378,46 +413,46 @@ impl Simulator {
     }
 
     /// Return an iterator of all nodes that are in the given timeline
-    pub fn timeline_query(&self, timeline_id: TimelineId) -> impl Iterator<Item = SimSnapshotLink> + Clone + '_ {
+    pub fn timeline_query(&self, timeline_id: TimelineId) -> impl Iterator<Item = sg::NodeHandle> + Clone + '_ {
         #[derive(Debug, Clone, Copy)]
         struct StackEntry {
-            link: SimSnapshotLink,
+            handle: sg::NodeHandle,
             is_in_timeline: bool,
         }
 
         let mut stack = self.starts.iter().copied()
-            .inspect(|&link| debug_assert_eq!(self.snapshots[link].timeline_id, self.multiverse.root()))
-            .map(|link| StackEntry {
-                link,
+            .inspect(|&link| debug_assert_eq!(self.snapshots[link].timeline_id(), self.multiverse.root()))
+            .map(|handle| StackEntry {
+                handle: handle.into(),
                 // Necessarily true as link is a root
                 is_in_timeline: true,
             })
             .collect_vec();
 
         std::iter::from_fn(move || {
-            while let Some(StackEntry { link, is_in_timeline }) = stack.pop() {
+            while let Some(StackEntry { handle: link, is_in_timeline }) = stack.pop() {
                 debug_assert!(stack.iter().copied()
-                    .map(|entry| entry.link)
+                    .map(|entry| entry.handle)
                     .all_unique());
 
-                let node = self.snapshots.get_node(link).expect("Valid");
+                let node = &self.snapshots[link];
 
                 if is_in_timeline {
-                    let children = node.age_children.iter().copied()
+                    let children = node.children().iter().copied()
                         // take the distance of each child's timeline with the target timeline
-                        .filter_map(|child_link| self.multiverse.distance(self.snapshots[child_link].timeline_id, timeline_id)
+                        .filter_map(|child_handle| self.multiverse.distance(self.snapshots[child_handle].timeline_id(), timeline_id)
                             // checks that it is a parent
                             .and_then(|distance| (distance >= 0).then_some(distance))
-                            .map(|distance| (child_link, distance)))
-                        .collect_vec()
+                            .map(|distance| (child_handle, distance)))
+                        .collect_smallvec()
                     ;
                     let min_distance = children.iter()
                         .map(|&(_, distance)| distance)
                         .min();
 
                     children.iter()
-                        .map(|&(link, distance)| StackEntry {
-                            link,
+                        .map(|&(handle, distance)| StackEntry {
+                            handle: handle.into(),
                             is_in_timeline: distance == min_distance.expect("Non empty")
                         })
                         .collect_into(&mut stack);
@@ -425,11 +460,11 @@ impl Simulator {
                     return Some(link);
                 }
                 else {
-                    node.age_children.iter().copied()
-                        .map(|child_link| (child_link, self.snapshots[child_link].timeline_id))
+                    node.children().iter().copied()
+                        .map(|child_handle| (child_handle, self.snapshots[child_handle].timeline_id()))
                         .filter(|&(_, child_timeline_id)| self.multiverse.is_parent(child_timeline_id, timeline_id))
-                        .map(|(child_link, child_timeline_id)| StackEntry {
-                            link: child_link,
+                        .map(|(child_handle, child_timeline_id)| StackEntry {
+                            handle: child_handle.into(),
                             is_in_timeline: child_timeline_id == timeline_id
                         })
                         .collect_into(&mut stack);
@@ -441,35 +476,29 @@ impl Simulator {
     }
 
     fn apply_collision_1(&mut self, info: SimCollisionInfo<1>) {
-        let (link, snap) = info.get_snap(0);
-        self.snapshots.insert(&self.multiverse, snap.unghostify(), Some(link));
+        let new_partial = sg::PartialSnapshot {
+            timeline_id: info.snaps[0].snap.timeline_id,
+            delta_age: info.snaps[0].snap.extrapolated_by + info.col.impact_delta_time,
+            linvel: info.col.states[0].vel,
+            angvel: 0.,
+        };
+
+        self.snapshots.insert(new_partial, info.snaps[0].handle);
     }
 
     fn apply_collision_2(&mut self, info: SimCollisionInfo<2>) {
-        let (link0, new_snapshot0) = info.get_snap(0);
-        let (link1, new_snapshot1) = info.get_snap(1);
-        let child_timeline = info.child_timeline(&self.multiverse);
+        for i in 0..2 {
+            let st = self.integrate(info.snaps[i].handle).time;
+            let dt = info.col.impact_time - st;
+            let new_partial = sg::PartialSnapshot {
+                timeline_id: info.snaps[i].snap.timeline_id,
+                delta_age: dt.try_into().expect("Positive"),
+                linvel: info.col.states[i].vel,
+                angvel: 0.,
+            };
 
-        let new_timeline = if
-            self.node_has_children(link0, child_timeline) ||
-            self.node_has_children(link1, child_timeline)
-        {
-            self.multiverse.create_children(child_timeline)
+            self.snapshots.insert(new_partial, info.snaps[i].handle);
         }
-        else {
-            child_timeline
-        };
-
-        self.snapshots.insert(
-            &self.multiverse,
-            new_snapshot0.replace_timeline(new_timeline).unghostify(),
-            Some(link0)
-        );
-        self.snapshots.insert(
-            &self.multiverse,
-            new_snapshot1.replace_timeline(new_timeline).unghostify(),
-            Some(link1)
-        );
     }
 
     fn apply_collision(&mut self, info: SimGenericCollisionInfo) {
@@ -483,18 +512,21 @@ impl Simulator {
         }
     }
 
-    fn cast_sphere_wall_collision(&self, snap: &SimSnapshot) -> Option<SimSphereCollision<1>> {
+    fn cast_sphere_wall_collision(&self, snap: &sg::Snapshot) -> Option<Collision<1>> {
         let walls_shape = self.world_state.get_static_body_collision();
-        let walls_shape = snap.portal_traversals.iter()
-            .fold(walls_shape, |walls_shape, traversal|
-                clip_shapes_on_portal(walls_shape, traversal.portal_in.transform, traversal.direction)
-            );
+        // TODO
+        // let walls_shape = snap.portal_traversals.iter()
+        //     .fold(walls_shape, |walls_shape, traversal|
+        //         clip_shapes_on_portal(walls_shape, traversal.portal_in.transform, traversal.direction)
+        //     );
         let walls_shape = i_shape_to_parry_shape(walls_shape);
-        let sphere_shape = parry2d::shape::Ball::new(snap.radius);
+        let radius = self.world_state.spheres()[snap.object_id].radius;
+        let sphere_shape = parry2d::shape::Ball::new(radius);
 
         let collision = parry2d::query::cast_shapes(
             &default(), &default(), &walls_shape,
-            &na::Isometry2::translation(snap.pos.x, snap.pos.y), &na::vector![snap.vel.x, snap.vel.y], &sphere_shape,
+            &na::Isometry2::translation(snap.pos.x, snap.pos.y), &na::vector![snap.linvel.x, snap.linvel.y], &sphere_shape,
+
             parry2d::query::ShapeCastOptions {
                 stop_at_penetration: false,
                 ..default()
@@ -504,31 +536,34 @@ impl Simulator {
         let impact_normal = Vec2::new(collision.normal1.x, collision.normal1.y);
         let impact_dt = collision.time_of_impact;
         let impact_time = snap.time + impact_dt;
-        let new_vel = snap.vel - 2.0 * snap.vel.dot(impact_normal) * impact_normal;
-        let new_pos = snap.pos + snap.vel * impact_dt;
+        let new_vel = snap.linvel - 2.0 * snap.linvel.dot(impact_normal) * impact_normal;
+        let new_pos = snap.pos + snap.linvel * impact_dt;
 
-        Some(SimSphereCollision {
+        Some(Collision {
             debug_reason: "sphere-wall",
             impact_time,
-            impact_delta_time: impact_dt,
-            states: [SimSphereNewState { vel: new_vel, pos: new_pos, ..default() }]
+            impact_delta_time: Positive::new(impact_dt).expect("Positive"),
+            states: [CollisionNewState { vel: new_vel, pos: new_pos, ..default() }]
         })
     }
 
-    fn cast_sphere_sphere_collision(&self, s1: &SimSnapshot, s2: &SimSnapshot) -> Option<SimSphereCollision<2>> {
+    fn cast_sphere_sphere_collision(&self, s1: &sg::Snapshot, s2: &sg::Snapshot) -> Option<Collision<2>> {
         debug_assert!((s1.time - s2.time).abs() <= DEFAULT_EPSILON);
         debug_assert!(self.multiverse.is_related(s1.timeline_id, s2.timeline_id));
+
+        let rad1 = self.world_state.spheres()[s1.object_id].radius;
+        let rad2 = self.world_state.spheres()[s2.object_id].radius;
 
         // NOTE: Generated by claude-4-sonnet
         // TODO: Try to use parry2d::query::cast_shapes too, maybe the perf is
         //       better anyway
         
         let dp = s2.pos - s1.pos;
-        let dv = s2.vel - s1.vel;
-        let sum_radii = s1.radius + s2.radius;
+        let dv = s2.linvel - s1.linvel;
+        let sum_radii = rad1 + rad2;
         
         // Solve quadratic equation: |p1(t) - p2(t)|² = (r1 + r2)²
-        // where p1(t) = s1.pos + s1.vel * t, p2(t) = s2.pos + s2.vel * t
+        // where p1(t) = s1.pos + s1.linvel * t, p2(t) = s2.pos + s2.linvel * t
         // This becomes: |dp + dv * t|² = sum_radii²
         // Expanding: (dp + dv * t) · (dp + dv * t) = sum_radii²
         // dp·dp + 2*dp·dv*t + dv·dv*t² = sum_radii²
@@ -555,331 +590,143 @@ impl Simulator {
         let t2 = (-b + sqrt_discriminant) / (2.0 * a);
 
         // We want the earliest positive collision time
-        let impact_dt = if t1 > DEFAULT_EPSILON {
+        let impact_dt = if t1 > -DEFAULT_EPSILON {
             t1
-        } else if t2 > DEFAULT_EPSILON {
+        } else if t2 > -DEFAULT_EPSILON {
             t2
         } else { 
             return None 
         };
         
-        let pos1 = s1.pos + s1.vel * impact_dt;
-        let pos2 = s2.pos + s2.vel * impact_dt;
+        let pos1 = s1.pos + s1.linvel * impact_dt;
+        let pos2 = s2.pos + s2.linvel * impact_dt;
         
         // Calculate collision response
         let collision_normal = (pos2 - pos1).normalize();
-        let relative_velocity = s1.vel - s2.vel;
+        let relative_velocity = s1.linvel - s2.linvel;
         let velocity_along_normal = relative_velocity.dot(collision_normal);
 
         // Don't resolve if velocities are separating
-        if velocity_along_normal < DEFAULT_EPSILON {
+        if velocity_along_normal < -DEFAULT_EPSILON {
             return None;
         }
         
-        // Assume equal mass elastic collision
-        let impulse = velocity_along_normal * collision_normal;
-        let vel1 = s1.vel - impulse;
-        let vel2 = s2.vel + impulse;
+        // Compute masses from radii (equal density) and elastic impulse
+        let m1 = rad1 * rad1;
+        let m2 = rad2 * rad2;
+        let impulse_scalar = 2.0 * m1 * m2 / (m1 + m2) * velocity_along_normal;
+        let impulse = impulse_scalar * collision_normal;
+        let vel1 = s1.linvel - impulse / m1;
+        let vel2 = s2.linvel + impulse / m2;
         
-        Some(SimSphereCollision {
+        Some(Collision {
             debug_reason: "sphere-sphere",
             impact_time: s1.time + impact_dt,
-            impact_delta_time: impact_dt,
+            impact_delta_time: Positive::new(impact_dt).expect("Positive"),
             states: [
-                SimSphereNewState { vel: vel1, pos: pos1, ..default() },
-                SimSphereNewState { vel: vel2, pos: pos2, ..default() },
+                CollisionNewState { vel: vel1, pos: pos1, ..default() },
+                CollisionNewState { vel: vel2, pos: pos2, ..default() },
             ],
         })
     }
 
-    fn cast_sphere_portal_traversal_start(&self, snap: &SimSnapshot, portal_idx: usize) -> Option<SimSphereCollision<1>> {
-        if snap.is_ghost() {
-            return None;
-        }
+    pub fn step(&mut self) -> ControlFlow<(), ()> {
+        let this = &*self;
 
-        let sphere_shape = parry2d::shape::Ball::new(snap.radius);
-        let portal = self.portals[portal_idx];
-        let portal_shape = parry2d::shape::Polyline::new(vec![
-            na::point![0., -portal.height / 2.],
-            na::point![0., portal.height / 2.],
-        ], None);
+        // println!();
 
-        if snap.portal_traversals.iter().any(|tr| tr.portal_in_idx == portal_idx) {
-            return None;
-        }
-
-        // Anoying and imperfect conversion from glam's Isometry to nalgebra's 
-        let plane_iso = {
-            let (scale, angle, trans) = portal.transform.to_scale_angle_translation();
-            assert_eq!(scale, Vec2::splat(1.));
-            na::Isometry::from_parts(
-                na::Translation2::new(trans.x, trans.y),
-                na::UnitComplex::from_angle(angle)
-            )
-        };
-
-        let contact = parry2d::query::contact(
-            &na::Isometry2::translation(snap.pos.x, snap.pos.y),  &sphere_shape,
-            &plane_iso, &portal_shape,
-            0.
-        ).expect("supported");
-
-        let result = contact
-            .map(|contact| {
-                parry2d::query::ShapeCastHit {
-                    time_of_impact: 0.,
-                    witness1: contact.point1,
-                    witness2: contact.point2,
-                    normal1: contact.normal1,
-                    normal2: contact.normal2,
-                    // unused anyway
-                    status: parry2d::query::ShapeCastStatus::Converged,
-                }
-            })
-            .or_else(|| {
-                parry2d::query::cast_shapes(
-                    &plane_iso, &default(), &portal_shape,
-
-                    &na::Isometry2::translation(snap.pos.x, snap.pos.y), &na::vector![snap.vel.x, snap.vel.y], &sphere_shape,
-
-                    parry2d::query::ShapeCastOptions {
-                        stop_at_penetration: true,
-                        ..default()
-                    }
-                ).expect("supported")
-            })?;
-
-        let impact_dt = result.time_of_impact;
-        let impact_time = impact_dt + snap.time;
-        let direction = if result.normal1.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
-
-        let vel = snap.vel;
-        let pos = snap.pos + vel * result.time_of_impact;
-        let traversal = SimPortalTraversal {
-            portal_in_idx: portal_idx,
-            portal_in: portal,
-            portal_out_idx: portal.linked_to,
-            portal_out: self.portals[portal.linked_to],
-            end_age: snap.age + result.time_of_impact + SimPortalTraversal::compute_end_dt(snap.radius, pos, vel, portal.transform),
-            direction,
-        };
-
-        Some(SimSphereCollision {
-            debug_reason: "sphere-portal-start",
-            impact_time,
-            impact_delta_time: impact_dt,
-            states: [SimSphereNewState {
-                vel, pos,
-                portal_traversals: tinyvec::array_vec!(_ => traversal),
-                time_offset: 0.,
-            }],
-        })
-    }
-
-    fn cast_sphere_portal_traversal_end(&self, snap: &SimSnapshot, portal_idx: usize) -> Option<SimSphereCollision<1>> {
-        if snap.is_ghost() {
-            return None;
-        }
-
-        let traversal = snap.portal_traversals.iter().copied()
-            .find(|traversal| traversal.portal_in_idx == portal_idx)?;
-
-        let portal_in = traversal.portal_in;
-        let portal_out = traversal.portal_out;
-
-        let inv_portal_trans = portal_in.transform.inverse();
-        let rel_vel = inv_portal_trans.transform_vector2(snap.vel);
-        let rel_pos = inv_portal_trans.transform_point2(snap.pos);
-
-        // compute when the center of the sphere touches the portal
-        // nothing in parry2d can help so we hardcode the solution
-        let impact_dt = -rel_pos.x / rel_vel.x;
-        // Impact in the past or alread on the impact -> nothing to be done
-        if impact_dt <= 0. {
-            return None;
-        }
-
-        let impact_time = snap.time + impact_dt;
-
-        let traveled_pos = portal_out.transform.transform_point2(rel_pos + rel_vel * impact_dt);
-        let traveled_vel = portal_out.transform.transform_vector2(rel_vel);
-
-        Some(SimSphereCollision {
-            debug_reason: "sphere-portal-end",
-            impact_time,
-            impact_delta_time: impact_dt,
-            states: [SimSphereNewState {
-                vel: traveled_vel, pos: traveled_pos,
-                portal_traversals: tinyvec::array_vec!(_ => traversal.swap()),
-                time_offset: traversal.time_offset(),
-            }],
-        })
-    }
-
-    fn next_collision_for_snap(
-        &self,
-        link: SimSnapshotLink,
-        snap: SimSnapshot,
-    ) -> Option<SimGenericCollisionInfo> {
-        let timeline_id = snap.timeline_id;
-
-        let world: AutoSmallVec<(SimSnapshotLink, SimSnapshot)> =
-            self.timeline_query(snap.timeline_id)
-            .filter(|&link_| link != link_)
-            .flat_map(|link_| {
-                let snap = self.snapshots[link_];
-                let (range, ranges) = self.get_node_time_ranges(link_, Some(timeline_id));
-                let mut ranges = ranges.map(Some).collect_smallvec();
-
-                repeat(link_).zip(
-                    once((range, snap))
-                    .chain(snap.get_ghosts()
-                        .map(move |ghost| (ranges[ghost.index].take().expect("Taken once"), ghost.snapshot)))
-                ).map(|(a, (b, c))| (a, b, c))
-            })
-            .filter(|(_, range, _)| {
-                range.contains(snap.time)
-            })
-            .map(|(link, _, snap_)| (link, snap_.extrapolate(snap.time)))
-            .collect()
-        ;
-        // Find a snapshot that already exist and is in the future
-        // It means we cannot expect the current snapshot to be valid after this
-        // time
-        let next_snapshot_time: Option<f32> =
-            self.timeline_query(snap.timeline_id)
-            .filter(|&link_| link != link_)
-            .flat_map(|link_| {
-                let (range_, ranges_) = self.get_node_time_ranges(link_, Some(timeline_id));
-                once(range_).chain(ranges_)
-                    .map(|r| r.start())
-            })
-            .filter(|&r| r > snap.time)
-            .min_by_key(|&r| OF(r))
+        let leafs = self.snapshots.nodes()
+            .filter(|(_, node)| node.children().is_empty())
+            .map(|(handle, _)| (handle, (&*self.integrate(handle)).clone()))
+            .collect_vec()
         ;
 
-        if let Some(next_snapshot_time) = next_snapshot_time {
-            dbg!(next_snapshot_time);
-        }
-
-        let collision_infos = empty::<SimGenericCollisionInfo>()
-            .chain(
-                once((link, snap))
-                .filter_map(|(link, snap)| self.cast_sphere_wall_collision(&snap)
-                    .map(|col| SimCollisionInfo {
-                        col,
-                        snaps: [SimLinkedSnapshot { link, snap }]
-                    })
-                    .map(SimGenericCollisionInfo::from)
-                )
-            )
-            .chain(
-                once((link, snap))
-                .cartesian_product(world.iter().copied())
-                .filter_map(|((l1, s1), (l2, s2))| self.cast_sphere_sphere_collision(&s1, &s2)
-                    .map(|col| SimCollisionInfo {
-                        col,
-                        snaps: [
-                            SimLinkedSnapshot { link: l1, snap: s1 },
-                            SimLinkedSnapshot { link: l2, snap: s2 },
-                        ]
-                    })
-                    .map(SimGenericCollisionInfo::from)
-                )
-            )
-            .chain(
-                once((link, snap))
-                .cartesian_product(0..self.portals.len())
-                .filter_map(|((l1, s1), portal_idx)| self.cast_sphere_portal_traversal_start(&s1, portal_idx)
-                    .map(|col| SimCollisionInfo {
-                        col,
-                        snaps: [SimLinkedSnapshot { link: l1, snap: s1 }]
-                    })
-                    .map(SimGenericCollisionInfo::from)
-                )
-            )
-            .chain(
-                once((link, snap))
-                .cartesian_product(0..self.portals.len())
-                .filter_map(|((l1, s1), portal_idx)| self.cast_sphere_portal_traversal_end(&s1, portal_idx)
-                    .map(|col| SimCollisionInfo {
-                        col,
-                        snaps: [SimLinkedSnapshot { link: l1, snap: s1 }]
-                    })
-                    .map(SimGenericCollisionInfo::from)
-                )
-            )
-            .filter(|result|
-                result.impact_time() <= self.max_time
-                // && next_snapshot_time.is_none_or(|next_time| result.impact_time() <= next_time)
-            )
-            .min_set_by_key(|result| OF(result.impact_delta_time()))
-        ;
-
-        assert!(collision_infos.len() <= 1);
+        // println!("{}", leafs.iter().map(|(_, snap)| format!("obj {} -> {}s", snap.object_id, snap.time)).join("\n"));
         
-        println!(
-            "{} collisions for idx {} from {}s at {}s ({}, {})x({}, {})",
-            if collision_infos.is_empty() { "No" } else { "One" },
-            snap.original_idx, snap.time,
-            collision_infos.first().map(|t| t.impact_time()).unwrap_or(f32::INFINITY),
-            snap.pos.x, snap.pos.y,
-            snap.vel.x, snap.vel.y,
-        );
-        if collision_infos.is_empty() {
-            None
-        }
-        else {
-            Some(collision_infos[0])
-        }
-    }
-
-    pub fn step(&mut self) -> ControlFlow<SimStepBreakReason, ()> {
-        let next_collisions = self.snapshots.nodes()
-            .filter(|(_, node)| node.age_children.is_empty())
-            .flat_map(|(link, node)| {
-                repeat(link).zip(
-                    once(node.snapshot)
-                    .chain(node.snapshot.get_ghosts()
-                        .map(move |ghost| ghost.snapshot))
-                )
-            })
-            .filter_map(|(link, snap)| self.next_collision_for_snap(link, snap))
-            // .unique_by(|col| {
-            //     let mut links = col.links();
-            //     links.sort();
-            //     (OF(col.impact_delta_time()), links)
-            // })
-            .inspect(|h| { println!("option: {}", h.simple_debug()); })
-            // Non trivial at all and may not be correct
-            // what we actually want is the collisions that hat no collisions 'before' it
-            // but with time travel this is non trivial, using the most parent timeline
-            // first seems to be the way but who knows
-            .min_set_by_key(|col| (col.parent_timeline(&self.multiverse), OF(col.impact_time())))
+        let timelines_maxs = leafs.iter()
+            .map(|(_, snap)| (snap.timeline_id, snap.time))
+            .into_grouping_map()
+            .max_by_key(|_, &t| OF(t))
         ;
-        let Some(next_collision) = next_collisions.first().cloned()
-        else { return ControlFlow::Break(SimStepBreakReason::Finished) };
-        println!("\nchosen: {}\n", next_collision.simple_debug());
 
-        self.apply_collision(next_collision);
+        // println!("{}", timelines_maxs.iter().map(|(tid, max)| format!("tid {tid} -> {max}s")).join("\n"));
+
+        let mut leafs = leafs;
+        for (_, snap) in &mut leafs {
+            *snap = snap.extrapolate_to(timelines_maxs[&snap.timeline_id]);
+        }
+        let leafs = leafs;
+     
+        let groups = leafs.par_iter().cloned()
+            .flat_map(|(handle, snap)| {
+                let tid = snap.timeline_id;
+                let t = snap.time;
+                debug_assert_eq!(t, timelines_maxs[&tid]);
+                let world = self.timeline_query(tid).par_bridge()
+                    .filter(move |&handle_| handle < handle_)
+                    .filter(move |&handle_| {
+                        this.get_node_time_ranges(handle_, Some(tid))
+                            .contains(t)
+                    })
+                    .map(move |handle_| (handle_, this.integrate(handle_).extrapolate_to(t)))
+                    .collect::<Vec<_>>();
+                pariter::repeat((handle, snap)).zip(world)
+            })
+            // Already the case by only outputing h1 < h2 in the previous step
+            // .unique_by(|&((h1, _), (h2, _))| (min(h1, h2), max(h1, h2)))
+            .collect::<Vec<_>>()
+        ;
+
+        debug_assert!(
+            groups.iter()
+                .map(|&((h1, _), (h2, _))| (min(h1, h2), max(h1, h2)))
+                .all_unique()
+        );
+
+        // println!("{}", groups.len());
+        // println!("{}", groups.iter().map(|((_, s1), (_, s2))| format!("{}-{}s and {}-{}s", s1.object_id, s1.time, s2.object_id, s2.time)).join("\n"));
+
+        let collision = pariter::empty()
+            // sphere-wall collisions
+            .chain(
+                leafs.par_iter().map(|(handle, snap)| (*handle, snap))
+                .filter_map(|(handle, snap)| {
+                    self.cast_sphere_wall_collision(snap)
+                    .map(|col| SimCollisionInfo {
+                        col,
+                        snaps: [SnapshotWithHandle { handle, snap: snap.clone() }],
+                    })
+                    .map(SimGenericCollisionInfo::from)
+                })
+            )
+            // sphere-sphere collisions
+            .chain(
+                groups.par_iter()
+                    .map(|((h1, s1), (h2, s2))| ((*h1, s1), (*h2, s2)))
+                    .filter_map(|((h1, s1), (h2, s2))| {
+                        self.cast_sphere_sphere_collision(s1, s2)
+                        .map(|col| SimCollisionInfo {
+                            col,
+                            snaps: [
+                                SnapshotWithHandle { handle: h1, snap: s1.clone() },
+                                SnapshotWithHandle { handle: h2, snap: s2.clone() },
+                            ],
+                        })
+                        .map(SimGenericCollisionInfo::from)
+                    })
+            )
+            .filter(|col| col.impact_time() < self.max_time)
+            .min_by_key(|col| OF(col.impact_time()))
+        ;
+
+        let Some(collision) = collision
+        else { return ControlFlow::Break(()) };
+
+        // println!("{}", collisions.iter().map(|col| col.simple_debug()).join("\n"));
+
+        self.apply_collision(collision);
         
         ControlFlow::Continue(())
-    }
-
-    pub fn extrapolate_to(&mut self, to: f32) {
-        // gathering the list of snapshots that need extrapolating
-        // have to collect_vec for the borrow checker
-        let to_extrapolate = self.snapshots
-            .nodes()
-            .filter(|(_, node)| node.snapshot.time < to)
-            .filter(|(_, node)| node.age_children.is_empty())
-            .map(|(link, _)| link)
-            .collect_vec();
-        for link in to_extrapolate {
-            let snap = self.snapshots[link];
-            let new_snap = snap.extrapolate(to);
-            self.snapshots.insert(&self.multiverse, new_snap, Some(link));
-        }
     }
 
     pub fn run(&mut self) {

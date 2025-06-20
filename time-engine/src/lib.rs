@@ -2,7 +2,8 @@
 #![feature(generic_const_exprs)]
 #![feature(try_blocks)]
 
-#![allow(incomplete_features)]
+#![expect(incomplete_features)]
+#![expect(dead_code)]
 
 mod world_state;
 pub use world_state::*;
@@ -15,12 +16,14 @@ pub use timeline_id::*;
 mod immutable_util;
 pub(crate) use immutable_util::*;
 
-const fn n_elements_for_stack<T>() -> usize {
+pub(crate) use typed_floats::tf32::*;
+
+pub const fn n_elements_for_stack<T>() -> usize {
     std::mem::size_of::<T>() / std::mem::size_of::<Vec<T>>()
 }
 
-pub(crate) type TinyVec<T, const N: usize> = smallvec::SmallVec<T, N>;
-pub(crate) type AutoSmallVec<T> = smallvec::SmallVec<T, { n_elements_for_stack::<T>() }>;
+pub(crate) type SmallVec<T, const N: usize> = smallvec::SmallVec<T, N>;
+pub(crate) type AutoSmallVec<T> = SmallVec<T, { n_elements_for_stack::<T>() }>;
 
 pub(crate) trait AutoSmallVecIterExt<T> {
     fn collect_smallvec(self) -> AutoSmallVec<T>;

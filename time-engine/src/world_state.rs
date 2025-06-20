@@ -2,7 +2,7 @@ use crate::*;
 
 use glam::f32::{ Vec2, Affine2 };
 use i_overlay::i_shape::base::data::Shapes;
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 const PORTALS_WALLS_WIDTH: f32 = 0.1;
 const PORTALS_WALLS_HEIGHT: f32 = 0.5;
@@ -128,11 +128,11 @@ impl WorldState {
         shapes
     }
 
-    pub fn create_simulator(self: Rc<Self>, max_time: f32) -> Simulator {
+    pub fn create_simulator(self: Arc<Self>, max_time: f32) -> Simulator {
         Simulator::new(self, max_time)
     }
 
-    pub fn simulate(self: Rc<Self>, max_time: f32) {
+    pub fn simulate(self: Arc<Self>, max_time: f32) {
         Simulator::new(self, max_time).run();
     }
 }

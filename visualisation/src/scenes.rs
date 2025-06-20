@@ -123,6 +123,31 @@ impl Scene for SinglePortalScene {
     }
 }
 
+pub struct BasicTwoBallScene;
+
+impl Scene for BasicTwoBallScene {
+    fn name(&self) -> &'static str {
+        "Basic two ball"
+    }
+
+    fn create_world_state(&self) -> te::WorldState {
+        let mut sim = te::WorldState::new(50., 50.);
+        sim.push_sphere(te::Sphere {
+            initial_pos: Vec2::new(40., 25.),
+            initial_velocity: Vec2::new(-15., -0.),
+            radius: 1.5,
+            ..Default::default()
+        });
+        sim.push_sphere(te::Sphere {
+            initial_pos: Vec2::new(10., 25.),
+            initial_velocity: Vec2::new(15., 0.1),
+            radius: 3.,
+            ..Default::default()
+        });
+        sim
+    }
+}
+
 pub struct BasicBouncingScene {
     pub seed: u64,
     pub name: &'static str,
@@ -152,11 +177,27 @@ impl Scene for BasicBouncingScene {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(self.seed);
 
         let mut sim = te::WorldState::new(self.width, self.height);
-        for _ in 0..self.sphere_count {
-            let pos = Vec2::new(rng.random_range(0. ..self.width), rng.random_range(0. ..self.height));
+
+        let mut max_tries = self.sphere_count * 10;
+
+        'ball_spawn: while sim.spheres().len() < self.sphere_count && max_tries > 0 {
+            max_tries -= 1;
+
+            let rad = rng.random_range(1. .. 3.);
+            let rad2 = rad*2.;
+            if self.width <= rad2*2. || self.height <= rad2*2. {
+                continue;
+            }
+            let pos = Vec2::new(rng.random_range(rad2..(self.width - rad2)), rng.random_range(rad2..(self.height - rad2)));
             let vel = Vec2::new(rng.random_range(-1. ..1.), rng.random_range(-1. ..1.))
                 .normalize() * rng.random_range(3. .. 50.);
-            let rad = rng.random_range(1. .. 3.);
+
+            for sphere in sim.spheres() {
+                let dist = pos.distance_squared(sphere.initial_pos);
+                if dist < (sphere.radius+rad).powi(2) {
+                    continue 'ball_spawn;
+                }
+            }
 
             sim.push_sphere(te::Sphere {
                 initial_pos: pos,
@@ -175,6 +216,7 @@ pub fn get_all_scenes() -> Vec<Arc<dyn Scene>> {
         Arc::new(PolchinskiParadox { enable_time_travel: false }),
         Arc::new(CollisionBehindPortal),
         Arc::new(SinglePortalScene),
+        Arc::new(BasicTwoBallScene),
         Arc::new(BasicBouncingScene {
             seed: 4444,
             name: "Basic Bouncing 1",

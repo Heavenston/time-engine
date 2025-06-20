@@ -2,5 +2,5 @@ use crate::*;
 
 mod simulator;
 pub use simulator::*;
-mod snapshots;
-pub use snapshots::*;
+pub mod snapgraph;
+pub use snapgraph as sg;

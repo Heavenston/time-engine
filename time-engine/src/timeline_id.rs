@@ -1,6 +1,6 @@
 use parking_lot::RwLock;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct TimelineId {
     idx: usize,
 }
@@ -55,9 +55,7 @@ impl TimelineMultiverse {
     }
 
     pub fn root(&self) -> TimelineId {
-        TimelineId {
-            idx: 0,
-        }
+        TimelineId::default()
     }
 
     fn timeline_from_idx(&self, idx: usize) -> TimelineId {

@@ -2,10 +2,10 @@ mod draw_polygon;
 mod simulation_renderer;
 mod scenes;
 
-use simulation_renderer::{render_simulation, RenderSimulationArgs};
-use scenes::{Scene, get_all_scenes};
+use simulation_renderer::{ render_simulation, RenderSimulationArgs };
+use scenes::{ Scene, get_all_scenes };
 
-use std::{any::Any, rc::Rc, sync::Arc};
+use std::{ any::Any, sync::Arc };
 
 use itertools::Itertools;
 use macroquad::{ prelude::*, ui::{ self, root_ui } };
@@ -19,7 +19,7 @@ const CAMERA_ZOOM_SPEED: f32 = 1.25;
 struct AppState {
     scenes: Vec<Arc<dyn Scene>>,
     current_scene: Arc<dyn Scene>,
-    sim: Rc<WorldState>,
+    sim: Arc<WorldState>,
     simulator: Simulator,
     step_count: u32,
     scene_changed: bool,
@@ -48,9 +48,8 @@ impl AppState {
     fn new() -> Self {
         let scenes = get_all_scenes();
         let scene = Arc::clone(&scenes[0]);
-        let sim = Rc::new(scene.create_world_state());
-        let mut simulator = sim.clone().create_simulator(scene.default_max_time());
-        let _ = simulator.step();
+        let sim = Arc::new(scene.create_world_state());
+        let simulator = sim.clone().create_simulator(scene.default_max_time());
         
         Self {
             max_t_text: format!("{:.02}", simulator.max_time()),
@@ -80,12 +79,12 @@ impl AppState {
     
     fn get_time_bounds(&self) -> (f32, f32) {
         let min_time = self.simulator.snapshots().nodes()
-            .map(|(_, node)| node.snapshot.time)
+            .map(|(handle, _)| self.simulator.integrate(handle).time)
             .min_by_key(|&t| OF(t))
             .unwrap_or(0.);
         let max_time = self.simulator.snapshots().nodes()
-            .filter(|(_, node)| node.age_children.is_empty())
-            .map(|(_, node)| node.snapshot.time)
+            .filter(|(_, node)| node.children().is_empty())
+            .map(|(handle, _)| self.simulator.integrate(handle).time)
             .max_by_key(|&t| OF(t))
             .unwrap_or(0.);
         (min_time, max_time)
@@ -95,14 +94,13 @@ impl AppState {
         self.step_count += 1;
         if self.simulator.step().is_break() {
             self.simulator_finished = true;
-            self.simulator.extrapolate_to(self.simulator.max_time());
         }
     }
     
     fn update_simulation(&mut self) {
         let (min_time, max_time) = self.get_time_bounds();
         
-        if !self.is_paused && self.time <= max_time {
+        if !self.is_paused {
             self.time += get_frame_time() * self.speed;
         }
         
@@ -111,15 +109,8 @@ impl AppState {
         } else if self.time > self.simulator.max_time() {
             self.time = self.simulator.max_time();
             self.is_paused = true;
-        } else if self.auto_full_simulate && !self.simulator_finished {
+        } else if !self.simulator_finished && (self.auto_full_simulate || self.time > max_time) {
             self.simulation_step();
-        } else if self.time > max_time {
-            if self.simulator_finished {
-                self.time = max_time;
-                self.is_paused = true;
-            } else {
-                self.simulation_step();
-            }
         }
     }
     
@@ -200,9 +191,6 @@ impl AppState {
         self.max_t_text = format!("{:.02}", self.simulator.max_time());
         self.simulator_finished = false;
         self.step_count = 0;
-
-        // initial step to resolve collisions happening at t=0
-        self.simulation_step();
     }
     
     fn full_simulate(&mut self) {
@@ -218,7 +206,7 @@ impl AppState {
     
     fn handle_scene_change(&mut self) {
         if self.scene_changed {
-            self.sim = Rc::new(self.current_scene.create_world_state());
+            self.sim = Arc::new(self.current_scene.create_world_state());
             self.reset_simulator();
             self.time = 0.;
             self.scene_changed = false;
@@ -305,7 +293,7 @@ impl AppState {
                 ui.horizontal(|ui| {
                     ui.label("Number of timelines:");
                     let active = self.simulator.time_query(self.time).into_iter()
-                        .map(|(_, link)| self.simulator.snapshots()[link].timeline_id)
+                        .map(|(_, link)| self.simulator.snapshots()[link].timeline_id())
                         .unique()
                         .count();
                     ui.colored_label(egui::Color32::GRAY, format!("{active}/{}", self.simulator.multiverse().len()));
@@ -323,16 +311,14 @@ impl AppState {
                         ui.colored_label(egui::Color32::LIGHT_RED, "No");
                     }
                 });
-                if !self.auto_full_simulate {
-                    ui.horizontal(|ui| {
-                        ui.label("Finished simulating:");
-                        if self.simulator_finished {
-                            ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
-                        } else {
-                            ui.colored_label(egui::Color32::LIGHT_RED, "No");
-                        }
-                    });
-                }
+                ui.horizontal(|ui| {
+                    ui.label("Finished simulating:");
+                    if self.simulator_finished {
+                        ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
+                    } else {
+                        ui.colored_label(egui::Color32::LIGHT_RED, "No");
+                    }
+                });
             });
         self.informations_opened = opened;
     }
@@ -343,7 +329,7 @@ impl AppState {
             .open(&mut opened)
             .show(ctx, |ui| {
                 let progress = max_time / self.simulator.max_time();
-                if progress < 1. {
+                if progress < 1. && !self.simulator_finished {
                     ui.add(egui::ProgressBar::new(progress));
                 }
             
@@ -394,7 +380,8 @@ impl AppState {
                 ui.label(format!("max_time: {max_time}"));
                 ui.label(format!("Current time: {:?}", self.time));
                 ui.separator();
-                let str = self.simulator.snapshots().nodes().map(|(_, snap)| snap.snapshot.time)
+                let str = self.simulator.snapshots().nodes()
+                    .map(|(handle, _)| self.simulator.integrate(handle).time)
                     .unique_by(|&t| OF(t))
                     .sorted_by_key(|&t| OF((t - self.time).abs()))
                     .take(5)
@@ -402,7 +389,7 @@ impl AppState {
                     .join(" -> \n   ");
                 ui.label(format!("Times:\n   {str}"));
                 let (q_min, q_max) = self.simulator.time_query(self.time).into_iter()
-                    .map(|(_, link)| self.simulator.snapshots()[link].time)
+                    .map(|(_, handle)| self.simulator.integrate(handle).time)
                     .minmax_by_key(|&t| OF(t)).into_option().unwrap_or_default();
                 ui.label(format!("Queryied: {q_min} - {q_max}"));
                 ui.separator();
@@ -465,7 +452,7 @@ impl AppState {
                     current_scene = Arc::new(BasicBouncingScene {
                         seed,
                         name: "Basic Bouncing Random",
-                        sphere_count: sphere_count.clamp(0, 20),
+                        sphere_count: sphere_count.clamp(0, 100),
                         width,
                         height,
                     });

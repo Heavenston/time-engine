@@ -1,6 +1,6 @@
 use macroquad::prelude::*;
 use i_overlay::{core::{fill_rule::FillRule, overlay_rule::OverlayRule}, float::single::SingleFloatOverlay as _, i_shape::base::data::Shapes, mesh::outline::offset::OutlineOffset};
-use time_engine::{self as te, clip_shapes_on_portal, Simulator};
+use time_engine::{self as te, Simulator};
 use crate::draw_polygon::draw_shapes;
 
 pub struct RenderSimulationArgs<'a> {
@@ -41,26 +41,30 @@ pub fn render_simulation(
 
     // Draw spheres
     for (is_generated_ghost, snap) in simulator.time_query(time).into_iter()
-        .map(|(range, link)| (range, simulator.snapshots()[link]))
+        .map(|(range, handle)| (range, simulator.integrate(handle)))
         .flat_map(move |(range, snap)| std::iter::once((range.clone(), false, snap))
-            .chain(snap.get_ghosts()
-                .filter(move |ghost| time < ghost.expiration_time)
-                .map(move |ghost| (range.offset(ghost.offset), true, ghost.snapshot))))
+            // .chain(snap.get_ghosts()
+            //     .filter(move |ghost| time < ghost.expiration_time)
+            //     .map(move |ghost| (range.offset(ghost.offset), true, ghost.snapshot)))
+        )
         .filter(|(range, _, _)| range.contains(time))
-        .map(|(_, is_ghost, snap)| (is_ghost, snap.extrapolate(time)))
+        .map(|(_, is_ghost, snap)| (is_ghost, snap.extrapolate_to(time)))
     {
-        let is_ghost = snap.is_ghost();
-        let te::SimSnapshot {
-            pos, vel, radius: rad,
+        let is_ghost = false;
+        let te::sg::Snapshot {
+            pos, linvel: vel,
             portal_traversals,
             ..
         } = snap;
+        let rad = world_state.spheres()[snap.object_id].radius;
 
         let sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
-        let cliped_sphere_shapes = portal_traversals.iter()
-            .fold(sphere_shapes.clone(), |sphere_shapes, traversal|
-                clip_shapes_on_portal(sphere_shapes, traversal.portal_in.transform, traversal.direction)
-            );
+        // let cliped_sphere_shapes = portal_traversals.iter()
+        //     .fold(sphere_shapes.clone(), |sphere_shapes, traversal|
+        //         clip_shapes_on_portal(sphere_shapes, traversal.portal_in.transform, traversal.direction)
+        //     )
+        // ;
+        let cliped_sphere_shapes = sphere_shapes.clone();
 
         if enable_debug_rendering {
             // draw a velocity line
@@ -112,10 +116,10 @@ pub fn render_simulation(
 
             draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE.with_alpha(0.5));
 
-            let color = BALL_COLORS[snap.original_idx % BALL_COLORS.len()];
+            let color = BALL_COLORS[snap.object_id % BALL_COLORS.len()];
             draw_shapes(Vec2::ZERO, &cliped_sphere_shapes, color.with_alpha(0.5));
 
-            let text = format!("{}", snap.original_idx);
+            let text = format!("{}", snap.object_id);
             let params = TextParams {
                 font: None,
                 font_size: 16,
@@ -128,7 +132,7 @@ pub fn render_simulation(
             draw_text_ex(&text, pos.x + size.width / 2., pos.y + size.height / 2., params);
         }
         else {
-            let color = BALL_COLORS[snap.original_idx % BALL_COLORS.len()];
+            let color = BALL_COLORS[snap.object_id % BALL_COLORS.len()];
             draw_shapes(Vec2::ZERO, &cliped_sphere_shapes, color);
         }
     }
