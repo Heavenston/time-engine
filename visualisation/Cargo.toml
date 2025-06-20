@@ -11,5 +11,5 @@ i_triangle = { version = "0.35.0", features = ["glam"] }
 itertools = "0.14.0"
 macroquad = "0.4.14"
 ordered-float = "5.0.0"
-rand = { version = "0.9.1", default-features = false, features = ["small_rng"] }
+rand = { version = "0.9.1", default-features = false, features = ["small_rng", "alloc"] }
 time-engine = { version = "0.1.0", path = "../time-engine" }
