@@ -59,17 +59,17 @@ impl AppState {
 
             controls_opened: true,
             informations_opened: true,
-            debug_info_opened: false,
+            debug_info_opened: cfg!(debug_assertions),
 
             cam_offset: Vec2::ZERO,
             zoom: 1.0,
 
-            enable_debug_rendering: false,
+            enable_debug_rendering: cfg!(debug_assertions),
             is_paused: true,
             time: 0.0,
             speed: 1.0,
             simulator_finished: false,
-            auto_full_simulate: true,
+            auto_full_simulate: !cfg!(debug_assertions),
         }
     }
     

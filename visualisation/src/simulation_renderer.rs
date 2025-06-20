@@ -114,6 +114,18 @@ pub fn render_simulation(
 
             let color = BALL_COLORS[snap.original_idx % BALL_COLORS.len()];
             draw_shapes(Vec2::ZERO, &cliped_sphere_shapes, color.with_alpha(0.5));
+
+            let text = format!("{}", snap.original_idx);
+            let params = TextParams {
+                font: None,
+                font_size: 16,
+                font_scale: -0.2,
+                font_scale_aspect: -1.,
+                rotation: 0.,
+                color: BLACK,
+            };
+            let size = measure_text(&text, None, params.font_size, params.font_scale);
+            draw_text_ex(&text, pos.x + size.width / 2., pos.y + size.height / 2., params);
         }
         else {
             let color = BALL_COLORS[snap.original_idx % BALL_COLORS.len()];
