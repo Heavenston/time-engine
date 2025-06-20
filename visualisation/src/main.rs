@@ -2,20 +2,23 @@ mod draw_polygon;
 mod simulation_renderer;
 mod scenes;
 
-use itertools::Itertools;
 use simulation_renderer::{render_simulation, RenderSimulationArgs};
-use scenes::{get_all_scenes, Scene};
+use scenes::{Scene, get_all_scenes};
 
+use std::{any::Any, rc::Rc, sync::Arc};
+
+use itertools::Itertools;
 use macroquad::{ prelude::*, ui::{ self, root_ui } };
 use ordered_float::OrderedFloat as OF;
 use time_engine::{WorldState, Simulator};
-use std::rc::Rc;
+
+use crate::scenes::BasicBouncingScene;
 
 const CAMERA_ZOOM_SPEED: f32 = 1.25;
 
 struct AppState {
-    scenes: Vec<Box<dyn Scene>>,
-    current_scene_index: usize,
+    scenes: Vec<Arc<dyn Scene>>,
+    current_scene: Arc<dyn Scene>,
     sim: Rc<WorldState>,
     simulator: Simulator,
     step_count: u32,
@@ -25,6 +28,7 @@ struct AppState {
     controls_opened: bool,
     informations_opened: bool,
     debug_info_opened: bool,
+    random_scene_opened: bool,
     
     // Camera state
     cam_offset: Vec2,
@@ -43,15 +47,15 @@ struct AppState {
 impl AppState {
     fn new() -> Self {
         let scenes = get_all_scenes();
-        let current_scene_index = 0;
-        let sim = Rc::new(scenes[current_scene_index].create_world_state());
-        let mut simulator = sim.clone().create_simulator(scenes[current_scene_index].default_max_time());
+        let scene = Arc::clone(&scenes[0]);
+        let sim = Rc::new(scene.create_world_state());
+        let mut simulator = sim.clone().create_simulator(scene.default_max_time());
         let _ = simulator.step();
         
         Self {
             max_t_text: format!("{:.02}", simulator.max_time()),
             scenes,
-            current_scene_index,
+            current_scene: scene,
             sim,
             simulator,
             step_count: 1,
@@ -60,6 +64,7 @@ impl AppState {
             controls_opened: true,
             informations_opened: true,
             debug_info_opened: cfg!(debug_assertions),
+            random_scene_opened: false,
 
             cam_offset: Vec2::ZERO,
             zoom: 1.0,
@@ -206,16 +211,14 @@ impl AppState {
         }
     }
     
-    fn change_scene(&mut self, new_index: usize) {
-        if new_index != self.current_scene_index {
-            self.current_scene_index = new_index;
-            self.scene_changed = true;
-        }
+    fn change_scene(&mut self, new_scene: Arc<dyn Scene>) {
+        self.scene_changed = true;
+        self.current_scene = new_scene;
     }
     
     fn handle_scene_change(&mut self) {
         if self.scene_changed {
-            self.sim = Rc::new(self.scenes[self.current_scene_index].create_world_state());
+            self.sim = Rc::new(self.current_scene.create_world_state());
             self.reset_simulator();
             self.time = 0.;
             self.scene_changed = false;
@@ -237,6 +240,7 @@ impl AppState {
             self.render_info_window(ctx);
             self.render_controls_window(ctx, max_time);
             self.render_debug_window(ctx);
+            self.render_random_scene_window(ctx);
             
             captured_pointer = ctx.wants_pointer_input();
             captured_keyboard = ctx.wants_keyboard_input();
@@ -248,17 +252,21 @@ impl AppState {
     fn render_menu_bar(&mut self, ctx: &egui::Context) {
         use egui::menu;
 
-        let current_scene_index = self.current_scene_index;
-        let mut scene_to_change = None;
+        let mut scene_to_change = None::<Arc<dyn Scene>>;
 
-        egui::TopBottomPanel::top("my_panel").show(ctx, |ui| {
+        egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
             menu::bar(ui, |ui| {
                 ui.menu_button("Change Scene", |ui| {
-                    for (i, scene) in self.scenes.iter().enumerate() {
-                        if ui.selectable_label(i == current_scene_index, scene.name()).clicked() {
+                    for scene in &self.scenes {
+                        if ui.selectable_label(Arc::ptr_eq(&self.current_scene, scene), scene.name()).clicked() {
                             ui.close_menu();
-                            scene_to_change = Some(i);
+                            scene_to_change = Some(Arc::clone(&scene));
+                            self.random_scene_opened = false;
                         }
+                    }
+                    if ui.selectable_label(self.random_scene_opened, "Basic Bouncing Random").clicked() {
+                        ui.close_menu();
+                        self.random_scene_opened = true;
                     }
                 });
 
@@ -276,8 +284,8 @@ impl AppState {
             });
         });
         
-        if let Some(i) = scene_to_change {
-            self.change_scene(i);
+        if let Some(scene) = scene_to_change {
+            self.change_scene(scene);
         }
     }
     
@@ -406,6 +414,66 @@ impl AppState {
                 ui.checkbox(&mut self.auto_full_simulate, "Auto full simulate");
             });
         self.debug_info_opened = opened;
+    }
+
+    fn render_random_scene_window(&mut self, ctx: &egui::Context) {
+        let mut opened = self.random_scene_opened;
+        egui::Window::new("Random Scene")
+            .open(&mut opened)
+            .show(ctx, |ui| {
+                let mut current_scene =
+                    Arc::downcast::<BasicBouncingScene>(Arc::clone(&self.current_scene) as Arc<dyn Any + Send + Sync>)
+                    .unwrap_or_else(|_| {
+                        self.scene_changed = true;
+                        Arc::new(BasicBouncingScene {
+                            name: "Basic Bouncing Random",
+                            ..Default::default()
+                        })
+                    })
+                ;
+
+                let mut changed = false;
+
+                let mut seed_text = format!("{}", current_scene.seed);
+                let mut sphere_count_text = format!("{}", current_scene.sphere_count);
+                let mut width_text = format!("{}", current_scene.width);
+                let mut height_text = format!("{}", current_scene.height);
+
+                ui.horizontal(|ui| {
+                    ui.label("Seed:");
+                    changed |= ui.text_edit_singleline(&mut seed_text).changed();
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Sphere count:");
+                    changed |= ui.text_edit_singleline(&mut sphere_count_text).changed();
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Size:");
+                    changed |= ui.text_edit_singleline(&mut width_text).changed();
+                    ui.label("x");
+                    changed |= ui.text_edit_singleline(&mut height_text).changed();
+                });
+
+                if
+                    changed &&
+                    let Ok(seed) = seed_text.parse::<u64>() &&
+                    let Ok(sphere_count) = sphere_count_text.parse::<usize>() &&
+                    let Ok(width) = width_text.parse::<f32>() && width > 1. &&
+                    let Ok(height) = height_text.parse::<f32>() && height > 1.
+                {
+                    self.scene_changed = true;
+                    current_scene = Arc::new(BasicBouncingScene {
+                        seed,
+                        name: "Basic Bouncing Random",
+                        sphere_count: sphere_count.clamp(0, 20),
+                        width,
+                        height,
+                    });
+                }
+
+                self.current_scene = current_scene;
+            });
+        self.random_scene_opened = opened;
     }
     
     fn render_simulation(&self) {

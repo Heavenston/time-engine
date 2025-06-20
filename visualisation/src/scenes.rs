@@ -1,8 +1,10 @@
+use std::{any::Any, sync::Arc};
+
 use rand::{Rng, SeedableRng};
 use time_engine as te;
 use macroquad::prelude::{Affine2, Vec2};
 
-pub trait Scene {
+pub trait Scene: Send + Sync + Any + 'static {
     fn name(&self) -> &'static str;
     fn create_world_state(&self) -> te::WorldState;
 
@@ -122,8 +124,23 @@ impl Scene for SinglePortalScene {
 }
 
 pub struct BasicBouncingScene {
-    seed: u64,
-    name: &'static str
+    pub seed: u64,
+    pub name: &'static str,
+    pub sphere_count: usize,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Default for BasicBouncingScene {
+    fn default() -> Self {
+        Self {
+            seed: 0,
+            name: "Basic Bouncing Scene",
+            sphere_count: 5,
+            width: 100.,
+            height: 100.,
+        }
+    }
 }
 
 impl Scene for BasicBouncingScene {
@@ -134,9 +151,9 @@ impl Scene for BasicBouncingScene {
     fn create_world_state(&self) -> te::WorldState {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(self.seed);
 
-        let mut sim = te::WorldState::new(100., 100.);
-        for _ in 0..10 {
-            let pos = Vec2::new(rng.random_range(0. ..100.), rng.random_range(0. ..100.));
+        let mut sim = te::WorldState::new(self.width, self.height);
+        for _ in 0..self.sphere_count {
+            let pos = Vec2::new(rng.random_range(0. ..self.width), rng.random_range(0. ..self.height));
             let vel = Vec2::new(rng.random_range(-1. ..1.), rng.random_range(-1. ..1.))
                 .normalize() * rng.random_range(3. .. 50.);
             let rad = rng.random_range(1. .. 3.);
@@ -152,19 +169,23 @@ impl Scene for BasicBouncingScene {
     }
 }
 
-pub fn get_all_scenes() -> Vec<Box<dyn Scene>> {
+pub fn get_all_scenes() -> Vec<Arc<dyn Scene>> {
     vec![
-        Box::new(PolchinskiParadox { enable_time_travel: true }),
-        Box::new(PolchinskiParadox { enable_time_travel: false }),
-        Box::new(CollisionBehindPortal),
-        Box::new(SinglePortalScene),
-        Box::new(BasicBouncingScene {
+        Arc::new(PolchinskiParadox { enable_time_travel: true }),
+        Arc::new(PolchinskiParadox { enable_time_travel: false }),
+        Arc::new(CollisionBehindPortal),
+        Arc::new(SinglePortalScene),
+        Arc::new(BasicBouncingScene {
             seed: 4444,
             name: "Basic Bouncing 1",
+            sphere_count: 5,
+            ..Default::default()
         }),
-        Box::new(BasicBouncingScene {
+        Arc::new(BasicBouncingScene {
             seed: 4445,
             name: "Basic Bouncing 2",
+            sphere_count: 10,
+            ..Default::default()
         }),
     ]
 }
