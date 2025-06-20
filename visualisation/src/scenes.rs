@@ -1,3 +1,4 @@
+use rand::{Rng, SeedableRng};
 use time_engine as te;
 use macroquad::prelude::{Affine2, Vec2};
 
@@ -120,45 +121,33 @@ impl Scene for SinglePortalScene {
     }
 }
 
-pub struct BasicBouncingScene;
+pub struct BasicBouncingScene {
+    seed: u64,
+    name: &'static str
+}
 
 impl Scene for BasicBouncingScene {
     fn name(&self) -> &'static str {
-        "Basic Bouncing"
+        self.name
     }
 
     fn create_world_state(&self) -> te::WorldState {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(self.seed);
+
         let mut sim = te::WorldState::new(100., 100.);
-        sim.push_sphere(te::Sphere {
-            initial_pos: Vec2::new(20., 20.),
-            initial_velocity: Vec2::new(35., 25.),
-            radius: 2.,
-            ..Default::default()
-        });
-        sim.push_sphere(te::Sphere {
-            initial_pos: Vec2::new(80., 80.),
-            initial_velocity: Vec2::new(-30., -20.),
-            radius: 2.5,
-            ..Default::default()
-        });
-        sim.push_sphere(te::Sphere {
-            initial_pos: Vec2::new(50., 10.),
-            initial_velocity: Vec2::new(0., 40.),
-            radius: 1.5,
-            ..Default::default()
-        });
-        sim.push_sphere(te::Sphere {
-            initial_pos: Vec2::new(50., 50.),
-            initial_velocity: Vec2::new(30., 40.),
-            radius: 3.,
-            ..Default::default()
-        });
-        sim.push_sphere(te::Sphere {
-            initial_pos: Vec2::new(10., 50.),
-            initial_velocity: Vec2::new(30., -40.),
-            radius: 2.25,
-            ..Default::default()
-        });
+        for _ in 0..10 {
+            let pos = Vec2::new(rng.random_range(0. ..100.), rng.random_range(0. ..100.));
+            let vel = Vec2::new(rng.random_range(-1. ..1.), rng.random_range(-1. ..1.))
+                .normalize() * rng.random_range(3. .. 50.);
+            let rad = rng.random_range(1. .. 3.);
+
+            sim.push_sphere(te::Sphere {
+                initial_pos: pos,
+                initial_velocity: vel,
+                radius: rad,
+                ..Default::default()
+            });
+        }
         sim
     }
 }
@@ -169,6 +158,13 @@ pub fn get_all_scenes() -> Vec<Box<dyn Scene>> {
         Box::new(PolchinskiParadox { enable_time_travel: false }),
         Box::new(CollisionBehindPortal),
         Box::new(SinglePortalScene),
-        Box::new(BasicBouncingScene),
+        Box::new(BasicBouncingScene {
+            seed: 4444,
+            name: "Basic Bouncing 1",
+        }),
+        Box::new(BasicBouncingScene {
+            seed: 4445,
+            name: "Basic Bouncing 2",
+        }),
     ]
 }

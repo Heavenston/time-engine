@@ -1,12 +1,14 @@
+// TEMP
+#![allow(dead_code)]
+
 use std::{
-    cmp::max,
     iter::{ empty, once, repeat },
     ops::{ BitAnd, ControlFlow, Range, RangeFrom },
     rc::Rc
 };
 
 use glam::{ Affine2, Vec2 };
-use itertools::{izip, Itertools};
+use itertools::Itertools;
 use ordered_float::OrderedFloat as OF;
 use nalgebra as na;
 
@@ -853,7 +855,7 @@ impl Simulator {
             // what we actually want is the collisions that hat no collisions 'before' it
             // but with time travel this is non trivial, using the most parent timeline
             // first seems to be the way but who knows
-            .min_set_by_key(|col| OF(col.impact_time()))
+            .min_set_by_key(|col| (col.parent_timeline(&self.multiverse), OF(col.impact_time())))
         ;
         let Some(next_collision) = next_collisions.first().cloned()
         else { return ControlFlow::Break(SimStepBreakReason::Finished) };
