@@ -20,6 +20,11 @@ struct AppState {
     simulator: Simulator,
     step_count: u32,
     scene_changed: bool,
+
+    // ui state
+    controls_opened: bool,
+    informations_opened: bool,
+    debug_info_opened: bool,
     
     // Camera state
     cam_offset: Vec2,
@@ -51,8 +56,14 @@ impl AppState {
             simulator,
             step_count: 1,
             scene_changed: false,
+
+            controls_opened: true,
+            informations_opened: true,
+            debug_info_opened: false,
+
             cam_offset: Vec2::ZERO,
             zoom: 1.0,
+
             enable_debug_rendering: false,
             is_paused: true,
             time: 0.0,
@@ -222,9 +233,9 @@ impl AppState {
             style.visuals.override_text_color = Some(egui::Color32::WHITE);
             ctx.set_style(style);
             
+            self.render_menu_bar(ctx);
             self.render_info_window(ctx);
             self.render_controls_window(ctx, max_time);
-            self.render_scene_selector_window(ctx);
             self.render_debug_window(ctx);
             
             captured_pointer = ctx.wants_pointer_input();
@@ -233,106 +244,36 @@ impl AppState {
         
         (captured_pointer, captured_keyboard)
     }
-    
-    fn render_info_window(&self, ctx: &egui::Context) {
-        egui::Window::new("Informations").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("FPS:");
-                ui.colored_label(egui::Color32::GRAY, format!("{}", get_fps()));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Total Simulation Steps:");
-                ui.colored_label(egui::Color32::GRAY, format!("{}", self.step_count));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Number of timelines:");
-                let active = self.simulator.time_query(self.time).into_iter()
-                    .map(|(_, link)| self.simulator.snapshots()[link].timeline_id)
-                    .unique()
-                    .count();
-                ui.colored_label(egui::Color32::GRAY, format!("{active}/{}", self.simulator.multiverse().len()));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Number of snapshots:");
-                let number = self.simulator.snapshots().nodes().count();
-                ui.colored_label(egui::Color32::GRAY, format!("{number}"));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Enabled debug rendering (d):");
-                if self.enable_debug_rendering {
-                    ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
-                } else {
-                    ui.colored_label(egui::Color32::LIGHT_RED, "No");
-                }
-            });
-            if !self.auto_full_simulate {
-                ui.horizontal(|ui| {
-                    ui.label("Finished simulating:");
-                    if self.simulator_finished {
-                        ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
-                    } else {
-                        ui.colored_label(egui::Color32::LIGHT_RED, "No");
-                    }
-                });
-            }
-        });
-    }
-    
-    fn render_controls_window(&mut self, ctx: &egui::Context, max_time: f32) {
-        egui::Window::new("Controls").show(ctx, |ui| {
-            let progress = max_time / self.simulator.max_time();
-            if progress < 1. {
-                ui.add(egui::ProgressBar::new(progress));
-            }
-            
-            ui.horizontal(|ui| {
-                if ui.button("Full Reset").clicked() {
-                    self.reset_simulator();
-                }
-                if !self.auto_full_simulate && ui.button("Full Simulate").clicked() {
-                    self.full_simulate();
-                }
-                let response = ui.add(egui::TextEdit::singleline(&mut self.max_t_text));
-                if response.lost_focus() && let Ok(max_t) = self.max_t_text.parse::<f32>() {
-                    self.simulator = self.sim.clone().create_simulator(max_t);
-                    let _ = self.simulator.step();
-                    self.simulator_finished = false;
-                    self.step_count = 1;
-                    self.max_t_text = format!("{max_t:.02}");
-                }
-            });
-            
-            let (min_time, _) = self.get_time_bounds();
-            ui.horizontal(|ui| {
-                ui.add(egui::Slider::new(&mut self.time, min_time..=self.simulator.max_time())
-                    .suffix("s"));
-                if ui.button(if self.is_paused { "Resume" } else { "Pause" }).clicked() {
-                    self.is_paused = !self.is_paused;
-                    if self.time >= self.simulator.max_time() {
-                        self.time = min_time;
-                    }
-                }
-            });
-            
-            ui.add(egui::Slider::new(&mut self.speed, 0.1..=10.)
-                .prefix("x")
-                .logarithmic(true)
-                .clamping(egui::SliderClamping::Never)
-                .text("Speed"));
-        });
-    }
-    
-    fn render_scene_selector_window(&mut self, ctx: &egui::Context) {
+
+    fn render_menu_bar(&mut self, ctx: &egui::Context) {
+        use egui::menu;
+
         let current_scene_index = self.current_scene_index;
         let mut scene_to_change = None;
-        
-        egui::Window::new("Scene Selector").show(ctx, |ui| {
-            ui.label("Select Scene:");
-            for (i, scene) in self.scenes.iter().enumerate() {
-                if ui.selectable_label(i == current_scene_index, scene.name()).clicked() {
-                    scene_to_change = Some(i);
-                }
-            }
+
+        egui::TopBottomPanel::top("my_panel").show(ctx, |ui| {
+            menu::bar(ui, |ui| {
+                ui.menu_button("Change Scene", |ui| {
+                    for (i, scene) in self.scenes.iter().enumerate() {
+                        if ui.selectable_label(i == current_scene_index, scene.name()).clicked() {
+                            ui.close_menu();
+                            scene_to_change = Some(i);
+                        }
+                    }
+                });
+
+                ui.menu_button("Window", |ui| {
+                    if ui.selectable_label(self.controls_opened, "Controls").clicked() {
+                        self.controls_opened = !self.controls_opened;
+                    }
+                    if ui.selectable_label(self.informations_opened, "Informations").clicked() {
+                        self.informations_opened = !self.informations_opened;
+                    }
+                    if ui.selectable_label(self.debug_info_opened, "Debug Info").clicked() {
+                        self.debug_info_opened = !self.debug_info_opened;
+                    }
+                });
+            });
         });
         
         if let Some(i) = scene_to_change {
@@ -340,31 +281,131 @@ impl AppState {
         }
     }
     
+    fn render_info_window(&mut self, ctx: &egui::Context) {
+        let mut opened = self.informations_opened;
+        egui::Window::new("Informations")
+            .open(&mut opened)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("FPS:");
+                    ui.colored_label(egui::Color32::GRAY, format!("{}", get_fps()));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Total Simulation Steps:");
+                    ui.colored_label(egui::Color32::GRAY, format!("{}", self.step_count));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Number of timelines:");
+                    let active = self.simulator.time_query(self.time).into_iter()
+                        .map(|(_, link)| self.simulator.snapshots()[link].timeline_id)
+                        .unique()
+                        .count();
+                    ui.colored_label(egui::Color32::GRAY, format!("{active}/{}", self.simulator.multiverse().len()));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Number of snapshots:");
+                    let number = self.simulator.snapshots().nodes().count();
+                    ui.colored_label(egui::Color32::GRAY, format!("{number}"));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Enabled debug rendering (d):");
+                    if self.enable_debug_rendering {
+                        ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
+                    } else {
+                        ui.colored_label(egui::Color32::LIGHT_RED, "No");
+                    }
+                });
+                if !self.auto_full_simulate {
+                    ui.horizontal(|ui| {
+                        ui.label("Finished simulating:");
+                        if self.simulator_finished {
+                            ui.colored_label(egui::Color32::LIGHT_GREEN, "Yes");
+                        } else {
+                            ui.colored_label(egui::Color32::LIGHT_RED, "No");
+                        }
+                    });
+                }
+            });
+        self.informations_opened = opened;
+    }
+    
+    fn render_controls_window(&mut self, ctx: &egui::Context, max_time: f32) {
+        let mut opened = self.controls_opened;
+        egui::Window::new("Controls")
+            .open(&mut opened)
+            .show(ctx, |ui| {
+                let progress = max_time / self.simulator.max_time();
+                if progress < 1. {
+                    ui.add(egui::ProgressBar::new(progress));
+                }
+            
+                ui.horizontal(|ui| {
+                    if ui.button("Full Reset").clicked() {
+                        self.reset_simulator();
+                    }
+                    if !self.auto_full_simulate && ui.button("Full Simulate").clicked() {
+                        self.full_simulate();
+                    }
+                    let response = ui.add(egui::TextEdit::singleline(&mut self.max_t_text));
+                    if response.lost_focus() && let Ok(max_t) = self.max_t_text.parse::<f32>() {
+                        self.simulator = self.sim.clone().create_simulator(max_t);
+                        let _ = self.simulator.step();
+                        self.simulator_finished = false;
+                        self.step_count = 1;
+                        self.max_t_text = format!("{max_t:.02}");
+                    }
+                });
+            
+                let (min_time, _) = self.get_time_bounds();
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.time, min_time..=self.simulator.max_time())
+                        .suffix("s"));
+                    if ui.button(if self.is_paused { "Resume" } else { "Pause" }).clicked() {
+                        self.is_paused = !self.is_paused;
+                        if self.time >= self.simulator.max_time() {
+                            self.time = min_time;
+                        }
+                    }
+                });
+            
+                ui.add(egui::Slider::new(&mut self.speed, 0.1..=10.)
+                    .prefix("x")
+                    .logarithmic(true)
+                    .clamping(egui::SliderClamping::Never)
+                    .text("Speed"));
+            });
+        self.controls_opened = opened;
+    }
+    
     fn render_debug_window(&mut self, ctx: &egui::Context) {
-        egui::Window::new("Debug Info").default_open(false).show(ctx, |ui| {
-            let (_, max_time) = self.get_time_bounds();
-            ui.label(format!("max_time: {max_time}"));
-            ui.label(format!("Current time: {:?}", self.time));
-            ui.separator();
-            let str = self.simulator.snapshots().nodes().map(|(_, snap)| snap.snapshot.time)
-                .unique_by(|&t| OF(t))
-                .sorted_by_key(|&t| OF((t - self.time).abs()))
-                .take(5)
-                .sorted_by_key(|&t| OF(t))
-                .join(" -> \n   ");
-            ui.label(format!("Times:\n   {str}"));
-            let (q_min, q_max) = self.simulator.time_query(self.time).into_iter()
-                .map(|(_, link)| self.simulator.snapshots()[link].time)
-                .minmax_by_key(|&t| OF(t)).into_option().unwrap_or_default();
-            ui.label(format!("Queryied: {q_min} - {q_max}"));
-            ui.separator();
-            ui.label(format!("{:#?}", self.simulator.multiverse()));
-            ui.separator();
-            if ui.button("Manual Step").clicked() {
-                self.simulation_step();
-            }
-            ui.checkbox(&mut self.auto_full_simulate, "Auto full simulate");
-        });
+        let mut opened = self.debug_info_opened;
+        egui::Window::new("Debug Info")
+            .open(&mut opened)
+            .show(ctx, |ui| {
+                let (_, max_time) = self.get_time_bounds();
+                ui.label(format!("max_time: {max_time}"));
+                ui.label(format!("Current time: {:?}", self.time));
+                ui.separator();
+                let str = self.simulator.snapshots().nodes().map(|(_, snap)| snap.snapshot.time)
+                    .unique_by(|&t| OF(t))
+                    .sorted_by_key(|&t| OF((t - self.time).abs()))
+                    .take(5)
+                    .sorted_by_key(|&t| OF(t))
+                    .join(" -> \n   ");
+                ui.label(format!("Times:\n   {str}"));
+                let (q_min, q_max) = self.simulator.time_query(self.time).into_iter()
+                    .map(|(_, link)| self.simulator.snapshots()[link].time)
+                    .minmax_by_key(|&t| OF(t)).into_option().unwrap_or_default();
+                ui.label(format!("Queryied: {q_min} - {q_max}"));
+                ui.separator();
+                ui.label(format!("{:#?}", self.simulator.multiverse()));
+                ui.separator();
+                if ui.button("Manual Step").clicked() {
+                    self.simulation_step();
+                }
+                ui.checkbox(&mut self.auto_full_simulate, "Auto full simulate");
+            });
+        self.debug_info_opened = opened;
     }
     
     fn render_simulation(&self) {
