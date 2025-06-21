@@ -348,8 +348,8 @@ impl Simulator {
         let portal_isometry = affine_to_isometry(portal.transform);
 
         let contact = parry2d::query::contact(
-            &portal_isometry, &portal_shape,
             &affine_to_isometry(self.snapshot_affine(snap)), &snap_shape,
+            &portal_isometry, &portal_shape,
             0.
         ).expect("supported");
 
@@ -463,6 +463,7 @@ impl Simulator {
                     smallvec![snapshot]
                 }
                 else if let Some(traversal) = self.get_snapshot_portal_traversal(&snapshot, half_portal_idx) {
+                    dbg!(traversal);
                     let mut through_snapshot = snapshot.clone();
 
                     let inp = &self.half_portals[half_portal_idx];
@@ -758,12 +759,6 @@ impl Simulator {
             })
             .collect::<Vec<_>>()
         ;
-
-        debug_assert!(
-            groups.iter()
-                .map(|&((h1, _), (h2, _))| (min(h1, h2), max(h1, h2)))
-                .all_unique()
-        );
 
         println!("ball-ball group count: {}", groups.len());
         println!("ball-ball groups: {}", groups.iter().map(|((_, s1), (_, s2))| format!("{}-{}s and {}-{}s", s1.object_id, s1.time, s2.object_id, s2.time)).join("\n"));

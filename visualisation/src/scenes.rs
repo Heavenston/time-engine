@@ -86,11 +86,18 @@ impl Scene for CollisionBehindPortal {
     }
 }
 
-pub struct SinglePortalScene;
+pub struct SinglePortalScene {
+    pub inverted: bool,
+}
 
 impl Scene for SinglePortalScene {
     fn name(&self) -> &'static str {
-        "Ghost collision"
+        if self.inverted {
+            "Inversed Ghost collision"
+        }
+        else {
+            "Ghost collision"
+        }
     }
 
     fn create_world_state(&self) -> te::WorldState {
@@ -98,7 +105,7 @@ impl Scene for SinglePortalScene {
         sim.push_portal(te::Portal {
             height: 15.,
             in_transform: Affine2::from_angle_translation(
-                std::f32::consts::PI,
+                if !self.inverted { std::f32::consts::PI } else { 0. },
                 Vec2::new(25., 70.),
             ),
             out_transform: Affine2::from_angle_translation(
@@ -108,7 +115,7 @@ impl Scene for SinglePortalScene {
             time_offset: 0.,
         });
         sim.push_ball(te::Ball {
-            initial_pos: Vec2::new(25.5, 70.), 
+            initial_pos: Vec2::new(if self.inverted { 24.5 } else { 25.5 }, 70.), 
             initial_velocity: Vec2::new(0., 0.),
             radius: 3.,
             ..Default::default()
@@ -215,7 +222,8 @@ pub fn get_all_scenes() -> Vec<Arc<dyn Scene>> {
         Arc::new(PolchinskiParadox { enable_time_travel: true }),
         Arc::new(PolchinskiParadox { enable_time_travel: false }),
         Arc::new(CollisionBehindPortal),
-        Arc::new(SinglePortalScene),
+        Arc::new(SinglePortalScene { inverted: false }),
+        Arc::new(SinglePortalScene { inverted: true }),
         Arc::new(BasicTwoBallScene),
         Arc::new(BasicBouncingScene {
             seed: 4444,
