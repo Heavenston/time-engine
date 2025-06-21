@@ -41,7 +41,7 @@ impl Scene for PolchinskiParadox {
             ),
             time_offset: if self.enable_time_travel { 2.8 } else { 0. },
         });
-        sim.push_sphere(te::Sphere {
+        sim.push_ball(te::Ball {
             initial_pos: Vec2::new(50., 10.), 
             initial_velocity: Vec2::new(0., 30.),
             radius: 3.,
@@ -72,7 +72,7 @@ impl Scene for CollisionBehindPortal {
             ),
             time_offset: 0.,
         });
-        sim.push_sphere(te::Sphere {
+        sim.push_ball(te::Ball {
             initial_pos: Vec2::new(25., 3.), 
             initial_velocity: Vec2::new(0., 15.),
             radius: 3.,
@@ -107,13 +107,13 @@ impl Scene for SinglePortalScene {
             ),
             time_offset: 0.,
         });
-        sim.push_sphere(te::Sphere {
+        sim.push_ball(te::Ball {
             initial_pos: Vec2::new(25.5, 70.), 
             initial_velocity: Vec2::new(0., 0.),
             radius: 3.,
             ..Default::default()
         });
-        sim.push_sphere(te::Sphere {
+        sim.push_ball(te::Ball {
             initial_pos: Vec2::new(29., 3.),
             initial_velocity: Vec2::new(0., 30.),
             radius: 3.,
@@ -132,13 +132,13 @@ impl Scene for BasicTwoBallScene {
 
     fn create_world_state(&self) -> te::WorldState {
         let mut sim = te::WorldState::new(50., 50.);
-        sim.push_sphere(te::Sphere {
+        sim.push_ball(te::Ball {
             initial_pos: Vec2::new(40., 25.),
             initial_velocity: Vec2::new(-15., -0.),
             radius: 1.5,
             ..Default::default()
         });
-        sim.push_sphere(te::Sphere {
+        sim.push_ball(te::Ball {
             initial_pos: Vec2::new(10., 25.),
             initial_velocity: Vec2::new(15., 0.1),
             radius: 3.,
@@ -151,7 +151,7 @@ impl Scene for BasicTwoBallScene {
 pub struct BasicBouncingScene {
     pub seed: u64,
     pub name: &'static str,
-    pub sphere_count: usize,
+    pub ball_count: usize,
     pub width: f32,
     pub height: f32,
 }
@@ -161,7 +161,7 @@ impl Default for BasicBouncingScene {
         Self {
             seed: 0,
             name: "Basic Bouncing Scene",
-            sphere_count: 5,
+            ball_count: 5,
             width: 100.,
             height: 100.,
         }
@@ -178,9 +178,9 @@ impl Scene for BasicBouncingScene {
 
         let mut sim = te::WorldState::new(self.width, self.height);
 
-        let mut max_tries = self.sphere_count * 10;
+        let mut max_tries = self.ball_count * 10;
 
-        'ball_spawn: while sim.spheres().len() < self.sphere_count && max_tries > 0 {
+        'ball_spawn: while sim.balls().len() < self.ball_count && max_tries > 0 {
             max_tries -= 1;
 
             let rad = rng.random_range(1. .. 3.);
@@ -192,14 +192,14 @@ impl Scene for BasicBouncingScene {
             let vel = Vec2::new(rng.random_range(-1. ..1.), rng.random_range(-1. ..1.))
                 .normalize() * rng.random_range(3. .. 50.);
 
-            for sphere in sim.spheres() {
-                let dist = pos.distance_squared(sphere.initial_pos);
-                if dist < (sphere.radius+rad).powi(2) {
+            for ball in sim.balls() {
+                let dist = pos.distance_squared(ball.initial_pos);
+                if dist < (ball.radius+rad).powi(2) {
                     continue 'ball_spawn;
                 }
             }
 
-            sim.push_sphere(te::Sphere {
+            sim.push_ball(te::Ball {
                 initial_pos: pos,
                 initial_velocity: vel,
                 radius: rad,
@@ -220,13 +220,13 @@ pub fn get_all_scenes() -> Vec<Arc<dyn Scene>> {
         Arc::new(BasicBouncingScene {
             seed: 4444,
             name: "Basic Bouncing 1",
-            sphere_count: 5,
+            ball_count: 5,
             ..Default::default()
         }),
         Arc::new(BasicBouncingScene {
             seed: 4445,
             name: "Basic Bouncing 2",
-            sphere_count: 10,
+            ball_count: 10,
             ..Default::default()
         }),
     ]

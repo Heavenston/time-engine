@@ -255,7 +255,7 @@ pub struct Simulator {
     // TODO: Use a 'sorted map' since handles are linear...
     integration_cache: RwLock<HashMap<sg::NodeHandle, Arc<sg::Snapshot>>>,
 
-    /// The first snapshot of all spheres
+    /// The first snapshot of all balls
     starts: Ro<Box<[sg::RootNodeHandle]>>,
     half_portals: Vec<HalfPortal>,
 
@@ -268,15 +268,15 @@ impl Simulator {
         let multiverse = TimelineMultiverse::new();
 
         let mut snapshots = sg::SnapshotGraph::new();
-        let starts = world_state.spheres.iter()
+        let starts = world_state.balls.iter()
             .enumerate()
-            .map(|(object_id, sphere)| sg::RootSnapshot {
+            .map(|(object_id, ball)| sg::RootSnapshot {
                 object_id,
 
-                pos: sphere.initial_pos,
+                pos: ball.initial_pos,
                 rot: 0.,
 
-                linvel: sphere.initial_velocity,
+                linvel: ball.initial_velocity,
                 angvel: 0.,
             })
             .map(|snapshot| snapshots.insert_root(snapshot))
@@ -512,7 +512,7 @@ impl Simulator {
     }
 
     fn snapshot_collision_shape(&self, snap: &sg::Snapshot) -> impl parry2d::shape::Shape {
-        let radius = self.world_state.spheres()[snap.object_id].radius;
+        let radius = self.world_state.balls()[snap.object_id].radius;
         parry2d::shape::Ball::new(radius)
     }
 
@@ -529,7 +529,7 @@ impl Simulator {
         }
     }
 
-    fn cast_sphere_wall_collision(
+    fn cast_ball_wall_collision(
         &self,
         snap: &sg::Snapshot,
         dt_range: Range<f32>,
@@ -541,11 +541,11 @@ impl Simulator {
         //         clip_shapes_on_portal(walls_shape, traversal.portal_in.transform, traversal.direction)
         //     );
         let walls_shape = i_shape_to_parry_shape(walls_shape);
-        let sphere_shape = self.snapshot_collision_shape(snap);
+        let ball_shape = self.snapshot_collision_shape(snap);
 
         let collision = parry2d::query::cast_shapes_nonlinear(
             &parry2d::query::NonlinearRigidMotion::identity(), &walls_shape,
-            &self.snapshot_motion(snap), &sphere_shape,
+            &self.snapshot_motion(snap), &ball_shape,
             dt_range.start, dt_range.end, false,
         ).expect("Supported")?;
 
@@ -555,14 +555,14 @@ impl Simulator {
         let new_vel = snap.linvel - 2.0 * snap.linvel.dot(impact_normal) * impact_normal;
 
         Some(Collision {
-            debug_reason: "sphere-wall",
+            debug_reason: "ball-wall",
             impact_time,
             impact_delta_time: Positive::new(impact_dt).expect("Positive"),
             states: [CollisionNewState { vel: new_vel, ..default() }]
         })
     }
 
-    fn cast_sphere_sphere_collision(
+    fn cast_ball_ball_collision(
         &self,
         s1: &sg::Snapshot,
         s2: &sg::Snapshot,
@@ -571,8 +571,8 @@ impl Simulator {
         debug_assert!((s1.time - s2.time).abs() <= DEFAULT_EPSILON);
         debug_assert!(self.multiverse.is_related(s1.timeline_id, s2.timeline_id));
 
-        let rad1 = self.world_state.spheres()[s1.object_id].radius;
-        let rad2 = self.world_state.spheres()[s2.object_id].radius;
+        let rad1 = self.world_state.balls()[s1.object_id].radius;
+        let rad2 = self.world_state.balls()[s2.object_id].radius;
 
         let collision = parry2d::query::cast_shapes_nonlinear(
             &self.snapshot_motion(s1), &self.snapshot_collision_shape(s1),
@@ -594,7 +594,7 @@ impl Simulator {
         let vel2 = s2.linvel + impulse / m2;
         
         Some(Collision {
-            debug_reason: "sphere-sphere",
+            debug_reason: "ball-ball",
             impact_time: s1.time + impact_dt,
             impact_delta_time: Positive::new(impact_dt).expect("Positive"),
             states: [
@@ -661,12 +661,12 @@ impl Simulator {
         // println!("{}", groups.iter().map(|((_, s1), (_, s2))| format!("{}-{}s and {}-{}s", s1.object_id, s1.time, s2.object_id, s2.time)).join("\n"));
 
         let collision = pariter::empty()
-            // sphere-wall collisions
+            // ball-wall collisions
             .chain(
                 leafs.par_iter().map(|(handle, snap)| (*handle, snap))
                 .filter_map(|(handle, snap)| {
                     let end = *self.max_time - snap.time;
-                    self.cast_sphere_wall_collision(snap, 0. .. end)
+                    self.cast_ball_wall_collision(snap, 0. .. end)
                     .map(|col| SimCollisionInfo {
                         col,
                         snaps: [SnapshotWithHandle { handle, snap: snap.clone() }],
@@ -674,14 +674,14 @@ impl Simulator {
                     .map(SimGenericCollisionInfo::from)
                 })
             )
-            // sphere-sphere collisions
+            // ball-ball collisions
             .chain(
                 groups.par_iter()
                     .map(|((h1, s1), (h2, s2))| ((*h1, s1), (*h2, s2)))
                     .filter_map(|((h1, s1), (h2, s2))| {
                         debug_assert_eq!(s1.time, s2.time);
                         let end = *self.max_time - s1.time;
-                        self.cast_sphere_sphere_collision(s1, s2, 0. .. end)
+                        self.cast_ball_ball_collision(s1, s2, 0. .. end)
                         .map(|col| SimCollisionInfo {
                             col,
                             snaps: [

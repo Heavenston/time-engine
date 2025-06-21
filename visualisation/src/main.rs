@@ -422,7 +422,7 @@ impl AppState {
                 let mut changed = false;
 
                 let mut seed_text = format!("{}", current_scene.seed);
-                let mut sphere_count_text = format!("{}", current_scene.sphere_count);
+                let mut ball_count_text = format!("{}", current_scene.ball_count);
                 let mut width_text = format!("{}", current_scene.width);
                 let mut height_text = format!("{}", current_scene.height);
 
@@ -431,8 +431,8 @@ impl AppState {
                     changed |= ui.text_edit_singleline(&mut seed_text).changed();
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Sphere count:");
-                    changed |= ui.text_edit_singleline(&mut sphere_count_text).changed();
+                    ui.label("Ball count:");
+                    changed |= ui.text_edit_singleline(&mut ball_count_text).changed();
                 });
                 ui.horizontal(|ui| {
                     ui.label("Size:");
@@ -444,7 +444,7 @@ impl AppState {
                 if
                     changed &&
                     let Ok(seed) = seed_text.parse::<u64>() &&
-                    let Ok(sphere_count) = sphere_count_text.parse::<usize>() &&
+                    let Ok(ball_count) = ball_count_text.parse::<usize>() &&
                     let Ok(width) = width_text.parse::<f32>() && width > 1. &&
                     let Ok(height) = height_text.parse::<f32>() && height > 1.
                 {
@@ -452,7 +452,7 @@ impl AppState {
                     current_scene = Arc::new(BasicBouncingScene {
                         seed,
                         name: "Basic Bouncing Random",
-                        sphere_count: sphere_count.clamp(0, 100),
+                        ball_count: ball_count.clamp(0, 100),
                         width,
                         height,
                     });

@@ -8,14 +8,14 @@ const PORTALS_WALLS_WIDTH: f32 = 0.1;
 const PORTALS_WALLS_HEIGHT: f32 = 0.5;
 
 #[derive(Debug, Clone, Copy)]
-pub struct Sphere {
+pub struct Ball {
     pub initial_time: f32,
     pub initial_pos: Vec2,
     pub initial_velocity: Vec2,
     pub radius: f32,
 }
 
-impl Default for Sphere {
+impl Default for Ball {
     fn default() -> Self {
         Self {
             initial_time: 0.,
@@ -48,7 +48,7 @@ impl Portal {
 pub struct WorldState {
     pub(crate) width: f32,
     pub(crate) height: f32,
-    pub(crate) spheres: Vec<Sphere>,
+    pub(crate) balls: Vec<Ball>,
     pub(crate) portals: Vec<Portal>,
 }
 
@@ -57,7 +57,7 @@ impl WorldState {
         Self {
             width,
             height,
-            spheres: default(),
+            balls: default(),
             portals: default(),
         }
     }
@@ -70,16 +70,16 @@ impl WorldState {
         self.height
     }
 
-    pub fn spheres(&self) -> &[Sphere] {
-        &self.spheres
+    pub fn balls(&self) -> &[Ball] {
+        &self.balls
     }
 
     pub fn portals(&self) -> &[Portal] {
         &self.portals
     }
 
-    pub fn push_sphere(&mut self, sphere: Sphere) {
-        self.spheres.push(sphere);
+    pub fn push_ball(&mut self, ball: Ball) {
+        self.balls.push(ball);
     }
 
     pub fn push_portal(&mut self, portal: Portal) {

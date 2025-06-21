@@ -39,7 +39,7 @@ pub fn render_simulation(
     // Draw the simulation bounding box
     draw_rectangle_lines(-2.5, -2.5, world_state.width() + 5., world_state.height() + 5., 5., WHITE);
 
-    // Draw spheres
+    // Draw balls
     for (is_generated_ghost, snap) in simulator.time_query(time).into_iter()
         .map(|(range, handle)| (range, simulator.integrate(handle)))
         .flat_map(move |(range, snap)| std::iter::once((range.clone(), false, snap))
@@ -56,21 +56,21 @@ pub fn render_simulation(
             portal_traversals,
             ..
         } = snap;
-        let rad = world_state.spheres()[snap.object_id].radius;
+        let rad = world_state.balls()[snap.object_id].radius;
 
-        let sphere_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
-        // let cliped_sphere_shapes = portal_traversals.iter()
-        //     .fold(sphere_shapes.clone(), |sphere_shapes, traversal|
-        //         clip_shapes_on_portal(sphere_shapes, traversal.portal_in.transform, traversal.direction)
+        let ball_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
+        // let cliped_ball_shapes = portal_traversals.iter()
+        //     .fold(ball_shapes.clone(), |ball_shapes, traversal|
+        //         clip_shapes_on_portal(ball_shapes, traversal.portal_in.transform, traversal.direction)
         //     )
         // ;
-        let cliped_sphere_shapes = sphere_shapes.clone();
+        let cliped_ball_shapes = ball_shapes.clone();
 
         if enable_debug_rendering {
             // draw a velocity line
             draw_line(pos.x, pos.y, pos.x + vel.x, pos.y + vel.y, 0.5, ORANGE.with_alpha(0.25));
 
-            let mut previous_shape = sphere_shapes.clone();
+            let mut previous_shape = ball_shapes.clone();
             // rendering timeline color
             if true {
                 let color = BALL_COLORS[snap.timeline_id.to_usize() % (BALL_COLORS.len() - 1) + 1];
@@ -114,10 +114,10 @@ pub fn render_simulation(
                 draw_shapes(Vec2::ZERO, &outline2, GREEN);
             }
 
-            draw_shapes(Vec2::ZERO, &sphere_shapes, WHITE.with_alpha(0.5));
+            draw_shapes(Vec2::ZERO, &ball_shapes, WHITE.with_alpha(0.5));
 
             let color = BALL_COLORS[snap.object_id % BALL_COLORS.len()];
-            draw_shapes(Vec2::ZERO, &cliped_sphere_shapes, color.with_alpha(0.5));
+            draw_shapes(Vec2::ZERO, &cliped_ball_shapes, color.with_alpha(0.5));
 
             let text = format!("{}", snap.object_id);
             let params = TextParams {
@@ -133,7 +133,7 @@ pub fn render_simulation(
         }
         else {
             let color = BALL_COLORS[snap.object_id % BALL_COLORS.len()];
-            draw_shapes(Vec2::ZERO, &cliped_sphere_shapes, color);
+            draw_shapes(Vec2::ZERO, &cliped_ball_shapes, color);
         }
     }
 
