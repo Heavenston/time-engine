@@ -52,7 +52,7 @@ pub fn render_simulation(
     {
         let is_ghost = false;
         let te::sg::Snapshot {
-            pos, linvel: vel,
+            pos, linvel,
             portal_traversals,
             ..
         } = snap;
@@ -68,7 +68,7 @@ pub fn render_simulation(
 
         if enable_debug_rendering {
             // draw a velocity line
-            draw_line(pos.x, pos.y, pos.x + vel.x, pos.y + vel.y, 0.5, ORANGE.with_alpha(0.25));
+            draw_line(pos.x, pos.y, pos.x + linvel.x, pos.y + linvel.y, 0.5, ORANGE.with_alpha(0.25));
 
             let mut previous_shape = ball_shapes.clone();
             // rendering timeline color

@@ -24,15 +24,13 @@ pub struct HalfPortal {
 
 #[derive(Debug, Clone, Default)]
 struct CollisionNewState {
-    vel: Vec2,
-    // portal_traversals: AutoSmallVec<sg::PortalTraversal>,
-    // time_offset: f32,
+    pub linacc: Vec2,
+    pub angacc: f32,
 }
 
 #[derive(Debug, Clone)]
 struct Collision<const N: usize> {
     debug_reason: &'static str,
-    impact_time: f32,
     impact_delta_time: Positive,
     states: [CollisionNewState; N],
 }
@@ -84,13 +82,6 @@ enum SimGenericCollisionInfo {
 }
 
 impl SimGenericCollisionInfo {
-    fn impact_time(&self) -> f32 {
-        match self {
-            Self::One(i) => i.col.impact_time,
-            Self::Two(i) => i.col.impact_time,
-        }
-    }
-
     fn impact_delta_time(&self) -> Positive {
         match self {
             Self::One(i) => i.col.impact_delta_time,
@@ -101,10 +92,10 @@ impl SimGenericCollisionInfo {
     fn simple_debug(&self) -> String {
         match self {
             SimGenericCollisionInfo::One(info) => {
-                format!("one({}, {}s, idx {})", info.col.debug_reason, info.col.impact_time, info.snaps[0].snap.object_id)
+                format!("one({}, dt {}s, idx {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0].snap.object_id)
             },
             SimGenericCollisionInfo::Two(info) => {
-                format!("two({}, {}s, idx {} on idx {})", info.col.debug_reason, info.col.impact_time, info.snaps[0].snap.object_id, info.snaps[1].snap.object_id)
+                format!("two({}, dt {}s, idx {} on idx {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0].snap.object_id, info.snaps[1].snap.object_id)
             },
         }
     }
@@ -353,8 +344,8 @@ impl Simulator {
                 time: snapshot.time + partial.delta_age.get(),
                 extrapolated_by: Positive::new(0.).expect("positive"),
 
-                linvel: partial.linvel,
-                angvel: partial.angvel,
+                linvel: snapshot.linvel + partial.linear_impulse,
+                angvel: snapshot.angvel + partial.angular_impulse,
 
                 pos: snapshot.pos + snapshot.linvel * partial.delta_age.get(),
                 rot: snapshot.rot + snapshot.angvel * partial.delta_age.get(),
@@ -474,8 +465,8 @@ impl Simulator {
         let new_partial = sg::PartialSnapshot {
             timeline_id: info.snaps[0].snap.timeline_id,
             delta_age: info.snaps[0].snap.extrapolated_by + info.col.impact_delta_time,
-            linvel: info.col.states[0].vel,
-            angvel: 0.,
+            linear_impulse: info.col.states[0].linacc,
+            angular_impulse: info.col.states[0].angacc,
         };
 
         self.snapshots.insert(new_partial, info.snaps[0].handle);
@@ -483,13 +474,11 @@ impl Simulator {
 
     fn apply_collision_2(&mut self, info: SimCollisionInfo<2>) {
         for i in 0..2 {
-            let st = self.integrate(info.snaps[i].handle).time;
-            let dt = info.col.impact_time - st;
             let new_partial = sg::PartialSnapshot {
                 timeline_id: info.snaps[i].snap.timeline_id,
-                delta_age: dt.try_into().expect("Positive"),
-                linvel: info.col.states[i].vel,
-                angvel: 0.,
+                delta_age: info.snaps[i].snap.extrapolated_by + info.col.impact_delta_time,
+                linear_impulse: info.col.states[i].linacc,
+                angular_impulse: info.col.states[i].angacc,
             };
 
             self.snapshots.insert(new_partial, info.snaps[i].handle);
@@ -547,14 +536,12 @@ impl Simulator {
 
         let impact_normal = Vec2::new(collision.normal1.x, collision.normal1.y);
         let impact_dt = collision.time_of_impact;
-        let impact_time = snap.time + impact_dt;
-        let new_vel = snap.linvel - 2.0 * snap.linvel.dot(impact_normal) * impact_normal;
+        let linacc = - 2.0 * snap.linvel.dot(impact_normal) * impact_normal;
 
         Some(Collision {
             debug_reason: "ball-wall",
-            impact_time,
             impact_delta_time: Positive::new(impact_dt).expect("Positive"),
-            states: [CollisionNewState { vel: new_vel, ..default() }]
+            states: [CollisionNewState { linacc, ..default() }]
         })
     }
 
@@ -586,16 +573,13 @@ impl Simulator {
         let m2 = rad2 * rad2;
         let impulse_scalar = 2.0 * m1 * m2 / (m1 + m2) * velocity_along_normal;
         let impulse = impulse_scalar * collision_normal;
-        let vel1 = s1.linvel - impulse / m1;
-        let vel2 = s2.linvel + impulse / m2;
         
         Some(Collision {
             debug_reason: "ball-ball",
-            impact_time: s1.time + impact_dt,
             impact_delta_time: Positive::new(impact_dt).expect("Positive"),
             states: [
-                CollisionNewState { vel: vel1, ..default() },
-                CollisionNewState { vel: vel2, ..default() },
+                CollisionNewState { linacc: -impulse / m1, ..default() },
+                CollisionNewState { linacc:  impulse / m2, ..default() },
             ],
         })
     }
@@ -688,8 +672,8 @@ impl Simulator {
                         .map(SimGenericCollisionInfo::from)
                     })
             )
-            .filter(|col| col.impact_time() < *self.max_time)
-            .min_by_key(|col| OF(col.impact_time()))
+            // .filter(|col| col.impact_delta_time() < *self.max_time)
+            .min_by_key(|col| col.impact_delta_time())
         ;
 
         let Some(collision) = collision

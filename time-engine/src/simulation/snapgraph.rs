@@ -93,8 +93,8 @@ pub struct RootSnapshot {
 pub struct PartialSnapshot {
     pub timeline_id: TimelineId,
     pub delta_age: Positive,
-    pub linvel: Vec2,
-    pub angvel: f32,
+    pub linear_impulse: Vec2,
+    pub angular_impulse: f32,
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -191,8 +191,8 @@ impl GenericNode for RootNode {
         PartialSnapshot {
             timeline_id: default(),
             delta_age: Positive::new(0.).expect("Positive"),
-            linvel: self.snapshot.linvel,
-            angvel: self.snapshot.angvel,
+            linear_impulse: Vec2::ZERO,
+            angular_impulse: 0.,
         }
     }
 }
