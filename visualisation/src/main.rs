@@ -114,7 +114,7 @@ impl AppState {
         }
     }
     
-    fn setup_camera(&self) -> Camera2D {
+    fn create_camera(&self) -> Camera2D {
         let (cw, ch) = if screen_width() > screen_height() {
             ((screen_width() / screen_height()) * self.sim.height(), self.sim.height())
         } else {
@@ -164,24 +164,10 @@ impl AppState {
         
         let scroll = mouse_wheel().1;
         if scroll != 0. {
-            let mouse_pos = |camera: &Camera2D| {
-                camera.screen_to_world(Vec2::new(mouse_position().0, mouse_position().1))
-            };
-            
-            let mouse_world_before = mouse_pos(camera);
+            let mouse_world_before = camera.screen_to_world(Vec2::new(mouse_position().0, mouse_position().1));
             self.zoom *= CAMERA_ZOOM_SPEED.powf(scroll.signum());
-            
-            let cam_centering_zoom = camera.zoom / self.zoom;
-            let new_camera = Camera2D {
-                target: camera.target,
-                offset: camera.offset,
-                zoom: cam_centering_zoom * self.zoom,
-                rotation: camera.rotation,
-                render_target: None,
-                viewport: camera.viewport,
-            };
-            
-            let mouse_world_after = mouse_pos(&new_camera);
+            let new_camera = self.create_camera();
+            let mouse_world_after = new_camera.screen_to_world(Vec2::new(mouse_position().0, mouse_position().1));
             self.cam_offset += mouse_world_before - mouse_world_after;
         }
     }
@@ -501,7 +487,7 @@ async fn main() {
         app_state.update_simulation();
         app_state.handle_scene_change();
 
-        let camera = app_state.setup_camera();
+        let camera = app_state.create_camera();
         let (captured_pointer, captured_keyboard) = app_state.render_ui();
 
         if !captured_keyboard {
