@@ -15,6 +15,8 @@ mod timeline_id;
 pub use timeline_id::*;
 mod immutable_util;
 pub(crate) use immutable_util::*;
+mod conversions;
+pub(crate) use conversions::*;
 
 pub(crate) use typed_floats::tf32::*;
 
