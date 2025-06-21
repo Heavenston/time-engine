@@ -3,7 +3,7 @@ use std::{
 };
 
 use parking_lot::RwLock;
-use rayon::{ prelude::*, iter as pariter };
+use rayon::{ prelude::*, iter as par_iter };
 use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
 use ordered_float::OrderedFloat as OF;
@@ -50,10 +50,6 @@ struct SimCollisionInfo<const N: usize> {
 }
 
 impl<const N: usize> SimCollisionInfo<N> {
-    fn get_snap(&self, i: usize) -> SnapshotWithHandle {
-        todo!()
-    }
-
     fn child_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
         assert!(N > 0);
         debug_assert!(
@@ -644,7 +640,7 @@ impl Simulator {
                     })
                     .map(move |handle_| (handle_, this.integrate(handle_).extrapolate_to(t)))
                     .collect::<Vec<_>>();
-                pariter::repeat((handle, snap)).zip(world)
+                par_iter::repeat((handle, snap)).zip(world)
             })
             // Already the case by only outputing h1 < h2 in the previous step
             // .unique_by(|&((h1, _), (h2, _))| (min(h1, h2), max(h1, h2)))
@@ -660,7 +656,7 @@ impl Simulator {
         // println!("{}", groups.len());
         // println!("{}", groups.iter().map(|((_, s1), (_, s2))| format!("{}-{}s and {}-{}s", s1.object_id, s1.time, s2.object_id, s2.time)).join("\n"));
 
-        let collision = pariter::empty()
+        let collision = par_iter::empty()
             // ball-wall collisions
             .chain(
                 leafs.par_iter().map(|(handle, snap)| (*handle, snap))

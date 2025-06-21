@@ -110,7 +110,7 @@ pub fn render_simulation(
                     join: i_overlay::mesh::style::LineJoin::Bevel,
                 });
                 let outline2 = outline.overlay(&previous_shape, OverlayRule::Difference, FillRule::EvenOdd);
-                previous_shape = outline;
+                // previous_shape = outline;
                 draw_shapes(Vec2::ZERO, &outline2, GREEN);
             }
 

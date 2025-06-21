@@ -2,7 +2,7 @@ use crate::*;
 
 use glam::f32::{ Vec2, Affine2 };
 use i_overlay::i_shape::base::data::Shapes;
-use std::{rc::Rc, sync::Arc};
+use std::sync::Arc;
 
 const PORTALS_WALLS_WIDTH: f32 = 0.1;
 const PORTALS_WALLS_HEIGHT: f32 = 0.5;
