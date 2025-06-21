@@ -1,13 +1,15 @@
+use std::iter::repeat;
+
 use macroquad::prelude::*;
 use i_overlay::{core::{fill_rule::FillRule, overlay_rule::OverlayRule}, float::single::SingleFloatOverlay as _, i_shape::base::data::Shapes, mesh::outline::offset::OutlineOffset};
-use time_engine::{self as te, Simulator};
+use time_engine as te;
 use crate::draw_polygon::draw_shapes;
 
 pub struct RenderSimulationArgs<'a> {
     pub world_state: &'a te::WorldState,
     pub enable_debug_rendering: bool,
     pub time: f32,
-    pub simulator: &'a Simulator,
+    pub simulator: &'a te::Simulator,
 }
 
 const BALL_COLORS: [Color; 10] = [
@@ -40,31 +42,24 @@ pub fn render_simulation(
     draw_rectangle_lines(-2.5, -2.5, world_state.width() + 5., world_state.height() + 5., 5., WHITE);
 
     // Draw balls
-    for (is_generated_ghost, snap) in simulator.time_query(time).into_iter()
-        .map(|(range, handle)| (range, simulator.integrate(handle)))
-        .flat_map(move |(range, snap)| std::iter::once((range.clone(), false, snap))
-            // .chain(snap.get_ghosts()
-            //     .filter(move |ghost| time < ghost.expiration_time)
-            //     .map(move |ghost| (range.offset(ghost.offset), true, ghost.snapshot)))
-        )
-        .filter(|(range, _, _)| range.contains(time))
-        .map(|(_, is_ghost, snap)| (is_ghost, snap.extrapolate_to(time)))
+    for (_, snap) in simulator.time_query(time).into_iter()
+        .map(|(handle, snap)| (handle, snap.extrapolate_to(time)))
     {
         let is_ghost = false;
         let te::sg::Snapshot {
             pos, linvel,
-            portal_traversals,
             ..
         } = snap;
         let rad = world_state.balls()[snap.object_id].radius;
 
         let ball_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
-        // let cliped_ball_shapes = portal_traversals.iter()
-        //     .fold(ball_shapes.clone(), |ball_shapes, traversal|
-        //         clip_shapes_on_portal(ball_shapes, traversal.portal_in.transform, traversal.direction)
-        //     )
-        // ;
-        let cliped_ball_shapes = ball_shapes.clone();
+        let cliped_ball_shapes = snap.portal_traversals.iter()
+            .fold(ball_shapes.clone(), |ball_shapes, traversal| te::clip_shapes_on_portal(
+                ball_shapes,
+                simulator.half_portals()[traversal.half_portal_idx].transform,
+                traversal.direction
+            ))
+        ;
 
         if enable_debug_rendering {
             // draw a velocity line
@@ -72,28 +67,18 @@ pub fn render_simulation(
 
             let mut previous_shape = ball_shapes.clone();
             // rendering timeline color
-            if true {
-                let color = BALL_COLORS[snap.timeline_id.to_usize() % (BALL_COLORS.len() - 1) + 1];
-                let outline = previous_shape.outline(&i_overlay::mesh::style::OutlineStyle {
-                    outer_offset: 0.5,
-                    inner_offset: 0.,
-                    join: i_overlay::mesh::style::LineJoin::Bevel,
-                });
-                let outline2 = outline.overlay(&previous_shape, OverlayRule::Difference, FillRule::EvenOdd);
-                previous_shape = outline;
-                draw_shapes(Vec2::ZERO, &outline2, color.with_alpha(0.9));
-            }
-            if is_generated_ghost {
-                let outline = previous_shape.outline(&i_overlay::mesh::style::OutlineStyle {
-                    outer_offset: 0.5,
-                    inner_offset: 0.,
-                    join: i_overlay::mesh::style::LineJoin::Bevel,
-                });
-                let outline2 = outline.overlay(&previous_shape, OverlayRule::Difference, FillRule::EvenOdd);
-                previous_shape = outline;
-                draw_shapes(Vec2::ZERO, &outline2, ORANGE);
-            }
-            if !portal_traversals.is_empty() {
+            // if true {
+            //     let color = BALL_COLORS[snap.timeline_id.to_usize() % (BALL_COLORS.len() - 1) + 1];
+            //     let outline = previous_shape.outline(&i_overlay::mesh::style::OutlineStyle {
+            //         outer_offset: 0.5,
+            //         inner_offset: 0.,
+            //         join: i_overlay::mesh::style::LineJoin::Bevel,
+            //     });
+            //     let outline2 = outline.overlay(&previous_shape, OverlayRule::Difference, FillRule::EvenOdd);
+            //     previous_shape = outline;
+            //     draw_shapes(Vec2::ZERO, &outline2, color.with_alpha(0.9));
+            // }
+            if !snap.portal_traversals.is_empty() {
                 let outline = previous_shape.outline(&i_overlay::mesh::style::OutlineStyle {
                     outer_offset: 0.5,
                     inner_offset: 0.,
@@ -138,20 +123,15 @@ pub fn render_simulation(
     }
 
     // Draw portals
-    for (height, transform) in world_state.portals().iter()
-        .flat_map(|portal| [
-            (portal.height, portal.in_transform),
-            (portal.height, portal.out_transform),
-        ])
-    {
-        let h2 = height / 2.;
-        let middle = transform.transform_point2(Vec2::new(0., 0.));
-        let start = transform.transform_point2(Vec2::new(0., -h2));
-        let end = transform.transform_point2(Vec2::new(0., h2));
+    for half_portal in simulator.half_portals() {
+        let h2 = half_portal.height / 2.;
+        let middle = half_portal.transform.transform_point2(Vec2::new(0., 0.));
+        let start = half_portal.transform.transform_point2(Vec2::new(0., -h2));
+        let end = half_portal.transform.transform_point2(Vec2::new(0., h2));
 
         let mut portal_color = GREEN;
         if enable_debug_rendering {
-            let normal = transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
+            let normal = half_portal.transform.transform_vector2(Vec2::new(-1., 0.)) * 10.;
             // draw the normal arrow
             draw_line(middle.x, middle.y, middle.x + normal.x, middle.y + normal.y, 0.5, GREEN.with_alpha(0.25));
 

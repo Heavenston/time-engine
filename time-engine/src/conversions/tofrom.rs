@@ -24,6 +24,17 @@ impl NalgebraToGlam<glam::Vec2> for na::Vector2<f32> {
     }
 }
 
+impl GlamToNalgebra<na::Point2<f32>> for glam::Vec2 {
+    fn to_na(self) -> na::Point2<f32> {
+        na::Point2::new(self.x, self.y)
+    }
+}
+impl NalgebraToGlam<glam::Vec2> for na::Point2<f32> {
+    fn to_gl(self) -> glam::Vec2 {
+        glam::Vec2::new(self.x, self.y)
+    }
+}
+
 // Vec3 <-> Vector3<f32>
 impl GlamToNalgebra<na::Vector3<f32>> for glam::Vec3 {
     fn to_na(self) -> na::Vector3<f32> {

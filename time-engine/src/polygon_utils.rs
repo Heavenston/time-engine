@@ -52,19 +52,15 @@ pub fn clip_shapes_on_portal(
 }
 
 pub fn i_shape_to_parry_shape(shapes: Shapes<Vec2>) -> impl shape::Shape {
-    // Probably very ineficient to tringulate the mesh instead of
-    // using something like convex hull but this is way easier and i know
-    // it will work
-    let triangulation = shapes.triangulate()
-        .to_triangulation::<u32>();
+    let convexes = shapes.triangulate()
+        .into_delaunay()
+        .to_convex_polygons();
 
-    shape::TriMesh::new(
-        triangulation.points.into_iter()
-            .map(|point| na::point![point.x, point.y])
-            .collect(),
-        triangulation.indices.into_iter()
-            .tuples::<(_, _, _)>()
-            .map(|(a, b, c)| [a, b, c])
-            .collect(),
-    ).unwrap()
+    shape::Compound::new(convexes.into_iter().map(|convex| {
+        let shape = shape::ConvexPolygon::from_convex_polyline_unmodified(convex.iter()
+            .map(|point| point.to_na())
+            .collect_vec()
+        ).expect("not empty");
+        (na::Isometry2::identity(), shape::SharedShape::new(shape))
+    }).collect())
 }

@@ -13,7 +13,7 @@ nalgebra = "0.33.2"
 ordered-float = "5.0.0"
 parking_lot = "0.12.4"
 parry2d = "0.21.1"
-smallvec = { version = "2.0.0-alpha.11", features = ["std", "specialization", "may_dangle"] }
+smallvec = { version = "2.0.0-alpha.11", features = ["std", "specialization", "may_dangle", "extract_if"] }
 arrayvec = "0.7.6"
 typed_floats = "1.0.6"
 rayon = "1.10.0"
