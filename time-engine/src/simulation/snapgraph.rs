@@ -1,18 +1,16 @@
 use super::*;
 
-use std::{ fmt::Display, ops::{ Deref, DerefMut, Index }, sync::atomic::AtomicU64 };
+use std::{ fmt::Display, ops::{ Deref, DerefMut, Index }, range::Range, sync::atomic::AtomicU64 };
 
 use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
-use smallvec::smallvec;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub struct PortalTraversal {
     // TODO: Reduce size to maybe u8 or u16
     pub half_portal_idx: usize,
     pub direction: PortalDirection,
-    pub start_time: f32,
-    pub end_time: f32,
+    pub duration: Range<f32>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq)]
@@ -33,6 +31,8 @@ pub struct Snapshot {
 
     pub portal_traversals: AutoSmallVec<PortalTraversal>,
     pub force_transform: Affine2,
+
+    pub validity_time_range: TimeRange,
 }
 
 impl Snapshot {
@@ -60,11 +60,15 @@ impl Snapshot {
         self
     }
 
-    pub fn extrapolate_to(&self, to: f32) -> Self {
+    pub fn extrapolate_to(&self, to: f32) -> Option<Self> {
         let dt = Positive::new(to - self.time)
             .expect("New time must be higher than current time");
 
-        Self {
+        if self.validity_time_range.end().is_some_and(|end| end <= to) {
+            return None;
+        }
+
+        Some(Self {
             age: self.age + dt,
             time: to,
             extrapolated_by: self.extrapolated_by + dt,
@@ -77,7 +81,7 @@ impl Snapshot {
                 .collect(),
 
             ..*self
-        }
+        })
     }
 }
 

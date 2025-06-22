@@ -1,5 +1,5 @@
 use std::{
-    cmp::{ max, min }, collections::HashMap, iter::{ empty, repeat }, ops::{ BitAnd, ControlFlow, Range, RangeFrom }, sync::Arc
+    collections::HashMap, iter::{ empty, repeat }, ops::{ ControlFlow }, range::Range, sync::Arc
 };
 
 use nalgebra as na;
@@ -136,100 +136,6 @@ impl From<SimCollisionInfo<2>> for SimGenericCollisionInfo {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum SimTimeRange {
-    Range(Range<f32>),
-    RangeFrom(RangeFrom<f32>),
-}
-
-impl SimTimeRange {
-    pub fn new(start: f32, end: Option<f32>) -> Self {
-        match end {
-            Some(end) => Self::Range(start..end),
-            None => Self::RangeFrom(start..),
-        }
-    }
-
-    pub fn start(&self) -> f32 {
-        match self {
-            SimTimeRange::Range(range) => range.start,
-            SimTimeRange::RangeFrom(range_from) => range_from.start,
-        }
-    }
-
-    pub fn end(&self) -> Option<f32> {
-        match self {
-            SimTimeRange::Range(range) => Some(range.end),
-            SimTimeRange::RangeFrom(_) => None,
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        match self {
-            SimTimeRange::Range(range) => range.start >= range.end,
-            SimTimeRange::RangeFrom(_) => false,
-        }
-    }
-
-    pub fn contains(&self, val: f32) -> bool {
-        val >= self.start() && self.end().is_none_or(|end| val < end)
-    }
-
-    pub fn offset(&self, offset: f32) -> Self {
-        Self::new(self.start() + offset, self.end().map(|end| end + offset))
-    }
-
-    pub fn up_to(&self, to: f32) -> Option<Self> {
-        if self.start() >= to {
-            None
-        }
-        else {
-            Some(Self::new(self.start(), self.end().map(|end| f32::min(end, to)).or(Some(to))))
-        }
-    }
-}
-
-impl From<Range<f32>> for SimTimeRange {
-    fn from(range: Range<f32>) -> Self {
-        Self::Range(range)
-    }
-}
-
-impl From<RangeFrom<f32>> for SimTimeRange {
-    fn from(range_from: RangeFrom<f32>) -> Self {
-        Self::RangeFrom(range_from)
-    }
-}
-
-impl BitAnd for SimTimeRange {
-    type Output = SimTimeRange;
-
-    /// Returns a range for values that are in both ranges
-    fn bitand(self, rhs: Self) -> Self::Output {
-        let start = self.start().max(rhs.start());
-        let end = self.end()
-            .zip(rhs.end())
-            .map(|(lhs, rhs)| f32::min(lhs, rhs))
-            .or(rhs.end());
-        // Makes sure start <= end
-        let start = end.unwrap_or(start).max(start);
-
-        Self::new(start, end)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SimTimeRanges {
-    pub ranges: AutoSmallVec<SimTimeRange>,
-}
-
-impl SimTimeRanges {
-    pub fn contains(&self, val: f32) -> bool {
-        self.ranges.iter()
-            .any(|range| range.contains(val))
-    }
-}
-
 pub struct TimelineQueryResult {
     pub before: Vec<sg::NodeHandle>,
     pub after: Option<sg::NodeHandle>,
@@ -324,7 +230,7 @@ impl Simulator {
             .any(|&child_handle| self.multiverse.is_related(self.snapshots[child_handle].timeline_id(), timeline_id))
     }
 
-    fn get_snapshot_portal_traversal_end_dt(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> f32 {
+    fn get_snapshot_portal_traversal_end_t(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> f32 {
         let half_portal = self.half_portals[half_portal_idx];
         let radius = self.world_state.balls()[snap.object_id].radius;
 
@@ -335,7 +241,7 @@ impl Simulator {
         let t0 = ( radius - rel_pos.x) / rel_vel.x;
         let t1 = (-radius - rel_pos.x) / rel_vel.x;
 
-        f32::max(t0, t1)
+        snap.time + f32::max(t0, t1)
     }
 
     fn get_snapshot_portal_traversal(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> Option<sg::PortalTraversal> {
@@ -377,14 +283,42 @@ impl Simulator {
 
         let impact_dt = result.time_of_impact;
         let impact_time = impact_dt + snap.time;
+        let end_t = self.get_snapshot_portal_traversal_end_t(snap, half_portal_idx);
         let direction = if result.normal1.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
 
         Some(sg::PortalTraversal {
             half_portal_idx,
             direction,
-            start_time: impact_time,
-            end_time: impact_time + self.get_snapshot_portal_traversal_end_dt(snap, half_portal_idx),
+            duration: impact_time..end_t,
         })
+    }
+
+    pub fn is_snapshot_ghost(&self, snap: &sg::Snapshot) -> bool {
+        snap.portal_traversals.iter()
+            .filter(|traversal| traversal.duration.end <= snap.time)
+            .any(|traversal| {
+                let inv_trans = self.half_portals[traversal.half_portal_idx].transform.inverse();
+                let rel_pos = inv_trans.transform_point2(snap.pos);
+                (rel_pos.x < 0.) != traversal.direction.is_front()
+            })
+    }
+
+    pub fn compute_snapshot_ghostification_time(&self, snap: &sg::Snapshot) -> Option<f32> {
+        snap.portal_traversals.iter()
+            .filter_map(|traversal| {
+                // clamp end time to at least snap.time
+                // as the traversal may have finished in the past
+                let et = f32::max(traversal.duration.end, snap.time);
+                let dt = et - snap.time;
+                let pos = snap.pos + snap.linvel * dt;
+
+                let inv_trans = self.half_portals[traversal.half_portal_idx].transform.inverse();
+                let rel_pos = inv_trans.transform_point2(pos);
+
+                ((rel_pos.x < 0.) != traversal.direction.is_front())
+                    .then_some(et)
+            })
+            .reduce(f32::min)
     }
 
     pub fn integrate(&self, handle: sg::NodeHandle) -> Arc<[sg::Snapshot]> {
@@ -412,19 +346,6 @@ impl Simulator {
                     let pos = snapshot.pos + snapshot.linvel * partial.delta_age.get();
                     let rot = snapshot.rot + snapshot.angvel * partial.delta_age.get();
 
-                    let mut portal_traversals = snapshot.portal_traversals.clone();
-                    // get only finished traversals
-                    let is_ghost = portal_traversals
-                        .extract_if(|traversal| traversal.end_time < time)
-                        .any(|traversal| {
-                            let inv_trans = self.half_portals[traversal.half_portal_idx].transform.inverse();
-                            let rel_pos = inv_trans.transform_point2(pos);
-                            (rel_pos.x < 0.) != traversal.direction.is_front()
-                        });
-                    if is_ghost {
-                        return None;
-                    }
-
                     Some(sg::Snapshot {
                         object_id: snapshot.object_id,
                         timeline_id: partial.timeline_id,
@@ -438,8 +359,13 @@ impl Simulator {
 
                         pos, rot,
 
-                        portal_traversals,
+                        portal_traversals: snapshot.portal_traversals.clone(),
                         force_transform: snapshot.force_transform,
+
+                        validity_time_range: TimeRange::new(
+                            snapshot.validity_time_range.start(),
+                            None,
+                        ),
                     })
                 }).collect_vec()
             },
@@ -447,7 +373,6 @@ impl Simulator {
         let mut out_snapshots = new_snapshots;
 
         for half_portal_idx in 0..self.half_portals.len() {
-            dbg!(out_snapshots.len());
             out_snapshots = out_snapshots.into_iter().flat_map(|mut snapshot| -> SmallVec<_, 2> {
                 let previous_traversal = snapshot.portal_traversals
                     .extract_if(|snap| snap.half_portal_idx == half_portal_idx)
@@ -456,9 +381,10 @@ impl Simulator {
 
                 if let Some(previous_traversal) = previous_traversal {
                     snapshot.portal_traversals.push(sg::PortalTraversal {
-                        end_time: dbg!(snapshot.time + self.get_snapshot_portal_traversal_end_dt(&snapshot, half_portal_idx)),
+                        duration: previous_traversal.duration.start..self.get_snapshot_portal_traversal_end_t(&snapshot, half_portal_idx),
                         ..previous_traversal
                     });
+                    dbg!(snapshot.portal_traversals.last());
 
                     smallvec![snapshot]
                 }
@@ -475,9 +401,10 @@ impl Simulator {
                     through_snapshot.portal_traversals.push(sg::PortalTraversal {
                         half_portal_idx: inp.linked_to,
                         direction: traversal.direction.swap(),
-                        start_time: traversal.start_time + inp.time_offset,
-                        end_time: traversal.end_time + inp.time_offset,
+                        duration: traversal.duration.start + inp.time_offset..traversal.duration.end + inp.time_offset,
                     });
+                    through_snapshot.validity_time_range =
+                        through_snapshot.validity_time_range.from(traversal.duration.start);
 
                     smallvec![snapshot, through_snapshot]
                 }
@@ -485,6 +412,26 @@ impl Simulator {
                     smallvec![snapshot]
                 }
             }).collect();
+        }
+
+        // Compute validity time ranges
+        out_snapshots.retain_mut(|snap| {
+            let ghostification = self.compute_snapshot_ghostification_time(snap);
+            if ghostification.is_some_and(|g| g <= 0.) {
+                return false;
+            }
+
+            snap.portal_traversals.retain(|traversal| traversal.duration.end > snap.time);
+
+            snap.validity_time_range = ghostification
+                .map(|ghostification| dbg!(dbg!(snap.validity_time_range).to(dbg!(ghostification))))
+                .unwrap_or(snap.validity_time_range);
+
+            true
+        });
+
+        if !out_snapshots.is_empty() {
+            println!("object_id = {}, snapshots.len = {}", out_snapshots[0].object_id, out_snapshots.len());
         }
 
         return Arc::clone(self.integration_cache.write().entry(handle)
@@ -501,11 +448,11 @@ impl Simulator {
     pub fn time_filtered_integrate(&self, handle: sg::NodeHandle, query_time: f32) -> impl Iterator<Item = sg::Snapshot> {
         let max_dt = self.get_node_max_dt(&self.snapshots[handle], None);
         let snaps = self.integrate(handle);
-        (0..snaps.len())
+        (0..snaps.len()).into_iter()
             .filter_map(move |i| {
                 let snap = &snaps[i];
-                SimTimeRange::new(snap.time, max_dt.map(|dt| snap.time + dt.get()))
-                    .contains(query_time)
+                TimeRange::new(Some(snap.time), max_dt.map(|dt| snap.time + dt.get()))
+                    .contains(&query_time)
                     .then(|| snap.clone())
             })
     }
@@ -737,9 +684,15 @@ impl Simulator {
         println!("timelines: {}", timelines_maxs.iter().map(|(tid, max)| format!("tid {tid} -> {max}s")).join("\n"));
 
         let mut leafs = leafs;
-        for (_, snap) in &mut leafs {
-            *snap = snap.extrapolate_to(timelines_maxs[&snap.timeline_id]);
-        }
+        leafs.retain_mut(|(_, snap)| {
+            if let Some(nsnap) = snap.extrapolate_to(timelines_maxs[&snap.timeline_id]) {
+                *snap = nsnap;
+                true
+            }
+            else {
+                false
+            }
+        });
         let leafs = leafs;
      
         let groups = leafs.par_iter().cloned()
@@ -752,7 +705,7 @@ impl Simulator {
                     .flat_map(move |handle_| repeat(handle_)
                         .zip(this.time_filtered_integrate(handle_, t))
                     )
-                    .map(|(handle, snap)| (handle, snap.extrapolate_to(t)))
+                    .filter_map(|(handle, snap)| Some(handle).zip(snap.extrapolate_to(t)))
                     .collect::<Vec<_>>();
                 par_iter::repeat((handle, snap))
                     .zip(world)
@@ -761,7 +714,7 @@ impl Simulator {
         ;
 
         println!("ball-ball group count: {}", groups.len());
-        println!("ball-ball groups: {}", groups.iter().map(|((_, s1), (_, s2))| format!("{}-{}s and {}-{}s", s1.object_id, s1.time, s2.object_id, s2.time)).join("\n"));
+        println!("ball-ball groups: {}", groups.iter().map(|((_, s1), (_, s2))| format!("{}-{}s and {}-{}s", s1.object_id, s1.time, s2.object_id, s2.time)).join(",  "));
 
         let collision = empty()
             // ball-wall collisions
@@ -802,7 +755,7 @@ impl Simulator {
         let Some(collision) = collision
         else { return ControlFlow::Break(()) };
 
-        println!("{}", collision.simple_debug());
+        println!("Selected collision: {}", collision.simple_debug());
 
         self.apply_collision(collision);
         

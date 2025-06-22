@@ -1,3 +1,5 @@
+#![feature(new_range_api)]
+
 mod draw_polygon;
 mod simulation_renderer;
 mod scenes;
@@ -99,12 +101,12 @@ impl AppState {
     }
     
     fn simulation_step(&mut self) {
-        println!("#### a");
+        println!("\n#### Start of step {} ####", self.step_count);
         self.step_count += 1;
         if self.simulator.step().is_break() {
             self.simulator_finished = true;
         }
-        println!("#### b");
+        println!("#### End of step {} ###", self.step_count-1);
     }
     
     fn update_simulation(&mut self) {
@@ -394,8 +396,23 @@ impl AppState {
                     })
                     .minmax_by_key(|&t| OF(t)).into_option().unwrap_or_default();
                 ui.label(format!("Queryied: {q_min} - {q_max}"));
-                ui.separator();
-                ui.label(format!("{:#?}", self.simulator.multiverse()));
+                // ui.separator();
+                // ui.label(format!("{:#?}", self.simulator.multiverse()));
+                {
+                    let pp = self.simulator.time_query(self.time).into_iter()
+                    .map(|(_, snap)| {
+                        format!(
+                            "{} {:?} - {}",
+                            snap.object_id,
+                            snap.validity_time_range,
+                            snap.portal_traversals.iter()
+                                .map(|traversal| format!("{} {:?} {:?}", traversal.half_portal_idx, traversal.direction, traversal.duration))
+                                .join(" - ")
+                        )
+                    }).join("\n");
+                    ui.separator();
+                    ui.label(format!("{pp}"));
+                }
                 ui.separator();
                 if ui.button("Manual Step").clicked() {
                     self.simulation_step();
