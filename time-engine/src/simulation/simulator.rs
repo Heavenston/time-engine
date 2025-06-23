@@ -239,21 +239,34 @@ impl Simulator {
             .any(|&child_handle| self.multiverse.is_related(self.snapshots[child_handle].timeline_id(), timeline_id))
     }
 
-    fn get_snapshot_portal_traversal_end_t(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> Option<f32> {
+    fn get_snapshot_portal_traversal_end_dt(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> Option<Positive> {
         let half_portal = self.half_portals[half_portal_idx];
         let radius = self.world_state.balls()[snap.object_id].radius;
 
         let inv_portal_trans = half_portal.transform.inverse();
         let rel_vel = inv_portal_trans.transform_vector2(snap.linvel);
-        if rel_vel.x.abs() < DEFAULT_EPSILON {
-            return None;
-        }
         let rel_pos = inv_portal_trans.transform_point2(snap.pos);
 
-        let t0 = ( radius - rel_pos.x) / rel_vel.x;
-        let t1 = (-radius - rel_pos.x) / rel_vel.x;
+        if rel_vel.x.abs() < DEFAULT_EPSILON {
+            if rel_pos.x.abs() <= radius {
+                Some(Positive::new(f32::INFINITY).expect("Positive"))
+            }
+            else {
+                None
+            }
+        }
+        else {
+            let t0 = ( radius - rel_pos.x) / rel_vel.x;
+            let t1 = (-radius - rel_pos.x) / rel_vel.x;
 
-        Some(snap.time + f32::max(t0, t1))
+            let max = f32::max(t0, t1);
+            if max < 0. {
+                None
+            }
+            else {
+                Some(Positive::new(max).expect("Positive"))
+            }
+        }
     }
 
     fn get_snapshot_portal_traversal(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> Option<sg::PortalTraversal> {
@@ -296,14 +309,15 @@ impl Simulator {
 
         let impact_dt = dbg!(result.time_of_impact);
         let impact_time = impact_dt + snap.time;
-        let end_t = self.get_snapshot_portal_traversal_end_t(snap, half_portal_idx);
-        debug_assert!(end_t.is_none_or(|end_t| end_t >= 0.));
+        let end_dt = self.get_snapshot_portal_traversal_end_dt(snap, half_portal_idx)
+            .expect("Collision exists");
+        let end_t = snap.time + end_dt.get();
         let direction = if result.normal1.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
 
         Some(sg::PortalTraversal {
             half_portal_idx,
             direction,
-            duration: TimeRange::new(Some(impact_time), end_t),
+            duration: impact_time..end_t,
         })
     }
 
@@ -325,7 +339,7 @@ impl Simulator {
                 // as the traversal may have finished in the past
                 // also
                 // traversals that never finish can never make a ghost
-                let et = traversal.duration.end()?.max(snap.time);
+                let et = traversal.duration.end.max(snap.time);
                 let dt = et - snap.time;
                 let pos = snap.pos + snap.linvel * dt;
 
@@ -430,9 +444,13 @@ impl Simulator {
                 // or we check if there is a new traversal in the future
                 
                 if let Some(previous_traversal) = previous_traversal {
-                    let end_t = self.get_snapshot_portal_traversal_end_t(&snapshot, half_portal_idx);
+                    // FIXME: This case is not correctly handled
+                    let end_t = dbg!(self.get_snapshot_portal_traversal_end_dt(&snapshot, half_portal_idx))
+                        .map(|dt| dbg!(snapshot.time + dt.get()))
+                        .or(Some(snapshot.time))
+                    ;
                     snapshot.portal_traversals.push(sg::PortalTraversal {
-                        duration: previous_traversal.duration.up_to(end_t),
+                        duration: dbg!(previous_traversal.duration.with_end(end_t)),
                         ..previous_traversal
                     });
                     dbg!(snapshot.portal_traversals.last().unwrap());
@@ -454,8 +472,9 @@ impl Simulator {
                         direction: traversal.direction.swap(),
                         duration: traversal.duration.offset(inp.time_offset),
                     });
-                    through_snapshot.validity_time_range =
-                        through_snapshot.validity_time_range.starting_from(traversal.duration.start());
+                    through_snapshot.validity_time_range = through_snapshot.validity_time_range.at_least_from(
+                        Some(traversal.duration.start)
+                    );
 
                     smallvec![snapshot, through_snapshot]
                 }
@@ -476,7 +495,7 @@ impl Simulator {
             snap.portal_traversals.retain(|traversal| !traversal.duration.is_finished(snap.time) && !traversal.duration.is_empty());
 
             snap.validity_time_range = ghostification
-                .map(|ghostification| snap.validity_time_range.up_to(Some(ghostification)))
+                .map(|ghostification| snap.validity_time_range.at_most_to(Some(ghostification)))
                 .unwrap_or(snap.validity_time_range);
 
             if snap.validity_time_range.is_empty() {
@@ -595,7 +614,8 @@ impl Simulator {
             angular_impulse: info.col.states[0].angular_impulse,
         };
 
-        self.snapshots.insert(new_partial, info.snaps[0].handle);
+        let n = self.snapshots.insert(new_partial, info.snaps[0].handle);
+        println!("Created handle {n}");
     }
 
     fn apply_collision_2(&mut self, info: SimCollisionInfo<2>) {
@@ -608,7 +628,8 @@ impl Simulator {
                 angular_impulse: info.col.states[i].angular_impulse,
             };
 
-            self.snapshots.insert(new_partial, info.snaps[i].handle);
+            let n = self.snapshots.insert(new_partial, info.snaps[i].handle);
+            println!("Created handle {n}");
         }
     }
 
@@ -717,10 +738,19 @@ impl Simulator {
     }
 
     pub fn step(&mut self) -> ControlFlow<(), ()> {
+        const MAX_DT: f32 = 1.;
+
         // make a non-mutable reference so a `Copy` reference for move closures
         let this = &*self;
 
         println!();
+        dbg!(&self.timeline_presents);
+
+        if self.timeline_presents.values().copied()
+            .reduce(f32::min)
+            .unwrap_or(*self.max_time) >= *self.max_time {
+            return ControlFlow::Break(());
+        }
 
         let leafs = self.snapshots.nodes()
             .filter(|(_, node)| node.children().is_empty())
@@ -733,6 +763,10 @@ impl Simulator {
             })
             .collect_vec()
         ;
+
+        if leafs.is_empty() {
+            return ControlFlow::Break(());
+        }
 
         println!("leafs: {}", leafs.iter().join(", "));
 
@@ -770,7 +804,7 @@ impl Simulator {
             .chain(
                 leafs.iter()
                 .filter_map(|snap| {
-                    let end = *self.max_time - snap.time;
+                    let end = f32::min(*self.max_time - snap.time, MAX_DT);
                     self.cast_ball_wall_collision(snap, 0. .. end)
                     .map(|col| SimCollisionInfo {
                         col,
@@ -783,8 +817,8 @@ impl Simulator {
             .chain(
                 groups.iter().copied()
                 .filter_map(|(s1, s2)| {
-                    debug_assert_eq!(s1.time, s2.time);
-                    let end = *self.max_time - s1.time;
+                    debug_assert!((s1.time - s2.time).abs() <= DEFAULT_EPSILON);
+                    let end = f32::min(*self.max_time - s1.time, MAX_DT);
                     self.cast_ball_ball_collision(s1, s2, 0. .. end)
                     .map(|col| SimCollisionInfo {
                         col,
@@ -793,12 +827,20 @@ impl Simulator {
                     .map(SimGenericCollisionInfo::from)
                 })
             )
+            .inspect(|col| debug_assert!(col.impact_delta_time() <= MAX_DT))
             // .filter(|col| col.impact_delta_time() < *self.max_time)
             .min_by_key(|col| (col.parent_timeline(&self.multiverse), OF(col.impact_time())))
         ;
 
         let Some(collision) = collision
-        else { return ControlFlow::Break(()) };
+        else {
+            println!("NO COLLISION FOUND");
+            for tid in leafs.iter().map(|snap| snap.timeline_id).unique() {
+                let present = self.timeline_presents.get_mut(&tid).expect("present");
+                *present += MAX_DT;
+            }
+            return ControlFlow::Continue(())
+        };
         let tid = collision.parent_timeline(&self.multiverse);
 
         println!("Selected collision: {}", collision.simple_debug());

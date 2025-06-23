@@ -1,8 +1,8 @@
-use std::ops::RangeBounds;
+use std::range::RangeBounds as _;
 
 use macroquad::prelude::*;
 use i_overlay::{core::{fill_rule::FillRule, overlay_rule::OverlayRule}, float::single::SingleFloatOverlay as _, i_shape::base::data::Shapes, mesh::outline::offset::OutlineOffset};
-use time_engine as te;
+use time_engine::{self as te, RangeHelpers as _};
 use crate::draw_polygon::draw_shapes;
 
 pub struct RenderSimulationArgs<'a> {
@@ -46,7 +46,7 @@ pub fn render_simulation(
         .filter_map(|snap| snap.extrapolate_to(time))
         .filter(|snap| enable_debug_rendering || snap.validity_time_range.start().is_none_or(|start| start <= time))
     {
-        let is_ghost = false;
+        let is_ghost = !snap.validity_time_range.contains(&time);
         let te::sg::Snapshot {
             pos, linvel,
             ..
@@ -55,7 +55,7 @@ pub fn render_simulation(
 
         let ball_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
         let cliped_ball_shapes = snap.portal_traversals.iter()
-            // .filter(|traversal| !traversal.duration.is_later(time))
+            .filter(|traversal| enable_debug_rendering || !traversal.duration.is_later(time))
             .fold(ball_shapes.clone(), |ball_shapes, traversal| te::clip_shapes_on_portal(
                 ball_shapes,
                 simulator.half_portals()[traversal.half_portal_idx].transform,

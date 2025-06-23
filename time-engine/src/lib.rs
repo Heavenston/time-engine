@@ -4,6 +4,7 @@
 #![feature(new_range_api)]
 #![feature(new_range)]
 #![feature(option_zip)]
+#![feature(range_bounds_is_empty)]
 
 #![expect(incomplete_features)]
 #![expect(dead_code)]

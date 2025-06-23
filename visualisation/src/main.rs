@@ -44,6 +44,7 @@ struct AppState {
     max_t_text: String,
     simulator_finished: bool,
     auto_full_simulate: bool,
+    auto_step: bool,
 }
 
 impl AppState {
@@ -76,6 +77,7 @@ impl AppState {
             speed: 1.0,
             simulator_finished: false,
             auto_full_simulate: !cfg!(debug_assertions),
+            auto_step: true,
         }
     }
     
@@ -121,7 +123,7 @@ impl AppState {
         } else if self.time > self.simulator.max_time() {
             self.time = self.simulator.max_time();
             self.is_paused = true;
-        } else if !self.simulator_finished && (self.auto_full_simulate || self.time > max_time) {
+        } else if !self.simulator_finished && (self.auto_full_simulate || (self.time > max_time && self.auto_step)) {
             self.simulation_step();
         }
     }
@@ -397,7 +399,8 @@ impl AppState {
                 {
                     let pp = self.simulator.time_query(self.time)
                         .map(|snap| {format!(
-                            "{snap} - {}",
+                            "{snap} - {:?} - {}",
+                            snap.validity_time_range,
                             snap.portal_traversals.iter()
                                 .map(|traversal| format!("{} {:?} {:?}", traversal.half_portal_idx, traversal.direction, traversal.duration))
                                 .join(" - ")
@@ -406,10 +409,13 @@ impl AppState {
                     ui.label(format!("{pp}"));
                 }
                 ui.separator();
-                if ui.button("Manual Step").clicked() {
-                    self.simulation_step();
-                }
-                ui.checkbox(&mut self.auto_full_simulate, "Auto full simulate");
+                ui.horizontal(|ui| {
+                    if ui.button("Manual Step").clicked() {
+                        self.simulation_step();
+                    }
+                    ui.checkbox(&mut self.auto_step, "Auto step");
+                    ui.checkbox(&mut self.auto_full_simulate, "Auto full simulate");
+                });
             });
         self.debug_info_opened = opened;
     }

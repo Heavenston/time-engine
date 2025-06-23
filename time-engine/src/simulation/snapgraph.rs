@@ -1,6 +1,6 @@
 use super::*;
 
-use std::{ fmt::Display, ops::{ Deref, DerefMut, Index }, sync::atomic::AtomicU64 };
+use std::{ fmt::Display, ops::{ Deref, DerefMut, Index }, range::Range, sync::atomic::AtomicU64 };
 
 use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
@@ -10,7 +10,7 @@ pub struct PortalTraversal {
     // TODO: Reduce size to maybe u8 or u16
     pub half_portal_idx: usize,
     pub direction: PortalDirection,
-    pub duration: TimeRange,
+    pub duration: Range<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,8 +71,11 @@ impl Snapshot {
     }
 
     pub fn extrapolate_to(&self, to: f32) -> Option<Self> {
-        let dt = Positive::new(to - self.time)
-            .expect("New time must be higher than current time");
+        let to = if (to - self.time).abs() <= DEFAULT_EPSILON { self.time } else { to };
+        let Ok(dt) = Positive::new(to - self.time)
+        else {
+            unreachable!("New time must be higher than current time ({to} is lower than {})", self.time);
+        };
 
         if self.validity_time_range.end().is_some_and(|end| end <= to) {
             return None;

@@ -1,6 +1,88 @@
 use super::*;
 
-use std::{ fmt::Debug, ops::BitAnd, range::{ Range, RangeFrom, RangeFull, RangeTo } };
+use std::{ convert::identity, fmt::Debug, ops::BitAnd, range::{ Bound, Range, RangeFrom, RangeFull, RangeTo } };
+
+pub trait RangeHelpers: RangeBounds<f32> {
+    fn is_finished(&self, time: f32) -> bool {
+        match self.end_bound() {
+            Bound::Included(&i) => i < time,
+            Bound::Excluded(&i) => i <= time,
+            Bound::Unbounded => false,
+        }
+    }
+
+    fn is_later(&self, time: f32) -> bool {
+        match self.start_bound() {
+            Bound::Included(&i) => i > time,
+            Bound::Excluded(&i) => i >= time,
+            Bound::Unbounded => false,
+        }
+    }
+}
+
+impl<T: RangeBounds<f32>> RangeHelpers for T { }
+
+pub trait RangeModifiers: Sized {
+    fn map_bounds(self, start: impl FnOnce(f32) -> f32, end: impl FnOnce(f32) -> f32) -> Self;
+
+    fn map_all_bounds(self, f: impl Fn(f32) -> f32) -> Self {
+        self.map_bounds(&f, &f)
+    }
+
+    fn offset(self, offset: f32) -> Self {
+        self.map_all_bounds(|t| t + offset)
+    }
+
+    fn at_least_from(self, from: Option<f32>) -> Self {
+        if let Some(from) = from {
+            self.map_all_bounds(|t| f32::max(t, from))
+        }
+        else {
+            self
+        }
+    }
+
+    fn with_end(self, to: Option<f32>) -> Self {
+        self.map_bounds(identity, |end| to.unwrap_or(end))
+    }
+
+    fn at_most_to(self, to: Option<f32>) -> Self {
+        if let Some(to) = to {
+            self.map_all_bounds(|t| f32::min(t, to))
+        }
+        else {
+            self
+        }
+    }
+
+    fn with_start(self, from: Option<f32>) -> Self {
+        self.map_bounds(|start| from.unwrap_or(start), identity)
+    }
+}
+
+impl RangeModifiers for RangeFull {
+    fn map_bounds(self, _f1: impl FnOnce(f32) -> f32, _f2: impl FnOnce(f32) -> f32) -> Self {
+        self
+    }
+}
+
+impl RangeModifiers for RangeFrom<f32> {
+    fn map_bounds(self, f1: impl FnOnce(f32) -> f32, _f2: impl FnOnce(f32) -> f32) -> Self {
+        f1(self.start)..
+    }
+}
+
+impl RangeModifiers for RangeTo<f32> {
+    fn map_bounds(self, _f1: impl FnOnce(f32) -> f32, f2: impl FnOnce(f32) -> f32) -> Self {
+        ..f2(self.end)
+    }
+}
+
+impl RangeModifiers for Range<f32> {
+    fn map_bounds(self, f1: impl FnOnce(f32) -> f32, f2: impl FnOnce(f32) -> f32) -> Self {
+        f1(self.start)..f2(self.end)
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum TimeRange {
@@ -36,34 +118,32 @@ impl TimeRange {
             _ => None,
         }
     }
+}
 
-    pub fn is_finished(&self, time: f32) -> bool {
-        self.end().is_some_and(|end| end <= time)
-    }
-
-    pub fn is_later(&self, time: f32) -> bool {
-        self.start().is_some_and(|start| start > time)
-    }
-
-    pub fn is_empty(&self) -> bool {
+impl RangeModifiers for TimeRange {
+    fn map_bounds(self, f1: impl FnOnce(f32) -> f32, f2: impl FnOnce(f32) -> f32) -> Self {
         match self {
-            TimeRange::RangeFull(_) => false,
-            TimeRange::RangeFrom(_) => false,
-            TimeRange::RangeTo(_) => false,
-            TimeRange::Range(r) => r.is_empty(),
+            TimeRange::RangeFull(range_full) => TimeRange::RangeFull(range_full.map_bounds(f1, f2)),
+            TimeRange::RangeFrom(range_from) => TimeRange::RangeFrom(range_from.map_bounds(f1, f2)),
+            TimeRange::RangeTo(range_to) => TimeRange::RangeTo(range_to.map_bounds(f1, f2)),
+            TimeRange::Range(range) => TimeRange::Range(range.map_bounds(f1, f2)),
         }
     }
 
-    pub fn offset(&self, offset: f32) -> Self {
-        Self::new(self.start().map(|start| start + offset), self.end().map(|end| end + offset))
+    fn at_least_from(self, from: Option<f32>) -> Self {
+        self & Self::new(from, None)
     }
 
-    pub fn starting_from(&self, from: Option<f32>) -> Self {
-        *self & Self::new(from, None)
+    fn with_end(self, to: Option<f32>) -> Self {
+        Self::new(self.start(), to)
     }
 
-    pub fn up_to(&self, to: Option<f32>) -> Self {
-        *self & Self::new(None, to)
+    fn at_most_to(self, to: Option<f32>) -> Self {
+        self & Self::new(None, to)
+    }
+
+    fn with_start(self, from: Option<f32>) -> Self {
+        Self::new(from, self.end())
     }
 }
 
