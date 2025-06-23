@@ -402,7 +402,13 @@ impl AppState {
                             "{snap} - {:?} - {}",
                             snap.validity_time_range,
                             snap.portal_traversals.iter()
-                                .map(|traversal| format!("{} {:?} {:?}", traversal.half_portal_idx, traversal.direction, traversal.duration))
+                                .map(|traversal| format!(
+                                    "{} {:?} {:?}{}",
+                                    traversal.half_portal_idx,
+                                    traversal.direction,
+                                    traversal.duration,
+                                    if traversal.is_swaped { " swapped" } else { "" }
+                                ))
                                 .join(" - ")
                         )}).join("\n");
                     ui.separator();

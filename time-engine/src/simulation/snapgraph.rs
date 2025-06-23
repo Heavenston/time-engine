@@ -11,6 +11,7 @@ pub struct PortalTraversal {
     pub half_portal_idx: usize,
     pub direction: PortalDirection,
     pub duration: Range<f32>,
+    pub is_swaped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

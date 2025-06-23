@@ -142,6 +142,12 @@ pub struct TimelineQueryResult {
     pub after: Option<sg::NodeHandle>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PortalTraversalCheckResult {
+    pub direction: PortalDirection,
+    pub duration: Range<f32>,
+}
+
 #[derive(Debug)]
 pub struct Simulator {
     world_state: Arc<WorldState>,
@@ -269,7 +275,7 @@ impl Simulator {
         }
     }
 
-    fn get_snapshot_portal_traversal(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> Option<sg::PortalTraversal> {
+    fn get_snapshot_portal_traversal(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> Option<PortalTraversalCheckResult> {
         let snap_shape = self.snapshot_collision_shape(snap);
         let portal = self.half_portals[half_portal_idx];
         let portal_shape = parry2d::shape::Polyline::new(vec![
@@ -303,7 +309,7 @@ impl Simulator {
                     &self.snapshot_motion(snap), &snap_shape,
 
                     // TODO: Use real number \o/
-                    0., 15., false
+                    0., 15., true
                 ).expect("supported")
             })?;
 
@@ -314,8 +320,7 @@ impl Simulator {
         let end_t = snap.time + end_dt.get();
         let direction = if result.normal1.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
 
-        Some(sg::PortalTraversal {
-            half_portal_idx,
+        Some(PortalTraversalCheckResult {
             direction,
             duration: impact_time..end_t,
         })
@@ -440,48 +445,63 @@ impl Simulator {
                     .at_most_one().expect("No duplicates")
                 ;
 
-                // We either update the end a previously existing traversal
-                // or we check if there is a new traversal in the future
-                
-                if let Some(previous_traversal) = previous_traversal {
-                    // FIXME: This case is not correctly handled
-                    let end_t = dbg!(self.get_snapshot_portal_traversal_end_dt(&snapshot, half_portal_idx))
-                        .map(|dt| dbg!(snapshot.time + dt.get()))
-                        .or(Some(snapshot.time))
-                    ;
-                    snapshot.portal_traversals.push(sg::PortalTraversal {
-                        duration: dbg!(previous_traversal.duration.with_end(end_t)),
-                        ..previous_traversal
-                    });
-                    dbg!(snapshot.portal_traversals.last().unwrap());
+                let new_traversal = self.get_snapshot_portal_traversal(&snapshot, half_portal_idx);
 
+                match (previous_traversal, new_traversal) {
+                (None, None) => {
                     smallvec![snapshot]
-                }
-                else if let Some(traversal) = self.get_snapshot_portal_traversal(&snapshot, half_portal_idx) {
-                    dbg!(traversal);
+                },
+                (None, Some(new_traversal)) => {
+                    dbg!(new_traversal);
                     let mut through_snapshot = snapshot.clone();
 
                     let inp = &self.half_portals[half_portal_idx];
                     let outp = &self.half_portals[inp.linked_to];
 
-                    snapshot.portal_traversals.push(traversal);
+                    snapshot.portal_traversals.push(sg::PortalTraversal {
+                        half_portal_idx: half_portal_idx,
+                        direction: new_traversal.direction,
+                        duration: new_traversal.duration,
+                        is_swaped: false,
+                    });
 
                     through_snapshot.apply_force_transform(outp.transform * inp.transform.inverse());
                     through_snapshot.portal_traversals.push(sg::PortalTraversal {
                         half_portal_idx: inp.linked_to,
-                        direction: traversal.direction.swap(),
-                        duration: traversal.duration.offset(inp.time_offset),
+                        direction: new_traversal.direction.swap(),
+                        duration: new_traversal.duration.offset(inp.time_offset),
+                        is_swaped: true,
                     });
                     through_snapshot.validity_time_range = through_snapshot.validity_time_range.at_least_from(
-                        Some(traversal.duration.start)
+                        Some(new_traversal.duration.start)
                     );
 
                     smallvec![snapshot, through_snapshot]
-                }
-                else {
+                },
+                (Some(previous_traversal), None) => {
+                    if previous_traversal.is_swaped {
+                        smallvec![]
+                    }
+                    else {
+                        smallvec![snapshot]
+                    }
+                },
+                (Some(previous_traversal), Some(new_traversal)) => {
+                    snapshot.portal_traversals.push(sg::PortalTraversal {
+                        duration: dbg!(previous_traversal.duration
+                            .with_end(Some(new_traversal.duration.end))),
+                        ..previous_traversal
+                    });
+                    dbg!(snapshot.portal_traversals.last().unwrap());
+
                     smallvec![snapshot]
+                },
                 }
             }).collect();
+
+            out_snapshots.iter().for_each(|snap| {
+                debug_assert!(snap.portal_traversals.iter().map(|traversal| traversal.half_portal_idx).all_unique(), "{snap:#?}");
+            });
         }
 
         // Compute validity time ranges
