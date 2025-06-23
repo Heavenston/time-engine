@@ -409,8 +409,8 @@ impl Simulator {
                     Some(sg::Snapshot {
                         object_id: snapshot.object_id,
                         handle,
-                        // Set later
-                        sub_id: !0,
+                        // Corrected later
+                        sub_id: snapshot.sub_id,
                         timeline_id: partial.timeline_id,
 
                         age: snapshot.age + partial.delta_age,
@@ -423,7 +423,9 @@ impl Simulator {
                         pos, rot,
 
                         // updated later
-                        portal_traversals: snapshot.portal_traversals.clone(),
+                        portal_traversals: snapshot.portal_traversals.iter().copied()
+                            // .filter(|traversal| !traversal.duration.is_finished(time))
+                            .collect(),
                         force_transform: snapshot.force_transform,
 
                         // we dont know when the new snapshot will be invalid after
@@ -439,24 +441,30 @@ impl Simulator {
         let mut out_snapshots = new_snapshots;
 
         for half_portal_idx in 0..self.half_portals.len() {
+            dbg!(half_portal_idx, &out_snapshots.len());
             out_snapshots = out_snapshots.into_iter().flat_map(|mut snapshot| -> SmallVec<_, 2> {
-                let previous_traversal = snapshot.portal_traversals
-                    .extract_if(|snap| snap.half_portal_idx == half_portal_idx)
-                    .at_most_one().expect("No duplicates")
-                ;
+                let previous_traversals = snapshot.portal_traversals
+                    .extract_if(|snap| snap.half_portal_idx == half_portal_idx);
+                #[cfg(debug_assertions)]
+                let previous_traversal = previous_traversals.at_most_one().expect("No duplicates");
+                #[cfg(not(debug_assertions))]
+                let previous_traversal = previous_traversals.take(1).next();
 
                 let new_traversal = self.get_snapshot_portal_traversal(&snapshot, half_portal_idx);
 
-                match (previous_traversal, new_traversal) {
+                match dbg!(previous_traversal, new_traversal) {
                 (None, None) => {
                     smallvec![snapshot]
                 },
                 (None, Some(new_traversal)) => {
-                    dbg!(new_traversal);
                     let mut through_snapshot = snapshot.clone();
 
                     let inp = &self.half_portals[half_portal_idx];
                     let outp = &self.half_portals[inp.linked_to];
+
+                    let out_traversal = snapshot.portal_traversals.iter()
+                        .find(|traversal| traversal.half_portal_idx == inp.linked_to);
+                    assert_eq!(out_traversal, None, "Unimplemented yet");
 
                     snapshot.portal_traversals.push(sg::PortalTraversal {
                         half_portal_idx: half_portal_idx,
@@ -466,6 +474,7 @@ impl Simulator {
                     });
 
                     through_snapshot.apply_force_transform(outp.transform * inp.transform.inverse());
+                    through_snapshot.portal_traversals.retain(|traversal| traversal.half_portal_idx != inp.linked_to);
                     through_snapshot.portal_traversals.push(sg::PortalTraversal {
                         half_portal_idx: inp.linked_to,
                         direction: new_traversal.direction.swap(),
@@ -488,8 +497,7 @@ impl Simulator {
                 },
                 (Some(previous_traversal), Some(new_traversal)) => {
                     snapshot.portal_traversals.push(sg::PortalTraversal {
-                        duration: dbg!(previous_traversal.duration
-                            .with_end(Some(new_traversal.duration.end))),
+                        duration: new_traversal.duration,
                         ..previous_traversal
                     });
                     dbg!(snapshot.portal_traversals.last().unwrap());
@@ -498,9 +506,11 @@ impl Simulator {
                 },
                 }
             }).collect();
+            dbg!(&out_snapshots.len());
+            dbg!(&out_snapshots);
 
             out_snapshots.iter().for_each(|snap| {
-                debug_assert!(snap.portal_traversals.iter().map(|traversal| traversal.half_portal_idx).all_unique(), "{snap:#?}");
+                debug_assert!(snap.portal_traversals.iter().map(|traversal| traversal.half_portal_idx).all_unique(), "Duplicate portal traversals");
             });
         }
 
@@ -692,7 +702,7 @@ impl Simulator {
             .fold(walls_shape, |walls_shape, traversal|
                 clip_shapes_on_portal(walls_shape, self.half_portals[traversal.half_portal_idx].transform, traversal.direction)
             );
-        let walls_shape = i_shape_to_parry_shape(walls_shape);
+        let walls_shape = i_shape_to_parry_shape(walls_shape)?;
         let ball_shape = self.snapshot_collision_shape(snap);
 
         let Some(collision) = parry2d::query::cast_shapes_nonlinear(

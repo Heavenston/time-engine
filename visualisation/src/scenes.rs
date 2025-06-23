@@ -130,6 +130,38 @@ impl Scene for SinglePortalScene {
     }
 }
 
+pub struct InfiniteMovement;
+
+impl Scene for InfiniteMovement {
+    fn name(&self) -> &'static str {
+        "Infinite movement"
+    }
+
+    fn create_world_state(&self) -> time_engine::WorldState {
+        let mut sim = te::WorldState::new(50., 50.);
+        sim.push_portal(te::Portal {
+            height: 15.,
+            in_transform: Affine2::from_angle_translation(
+                0.,
+                Vec2::new(40., 25.),
+            ),
+            out_transform: Affine2::from_angle_translation(
+                0.,
+                Vec2::new(10., 25.),
+            ),
+            time_offset: 0.,
+        });
+
+        sim.push_ball(te::Ball {
+            initial_pos: Vec2::new(25., 25.),
+            initial_velocity: Vec2::new(30., 0.),
+            radius: 3.,
+            ..Default::default()
+        });
+        sim
+    }
+}
+
 pub struct BasicTwoBallScene;
 
 impl Scene for BasicTwoBallScene {
@@ -224,6 +256,7 @@ pub fn get_all_scenes() -> Vec<Arc<dyn Scene>> {
         Arc::new(CollisionBehindPortal),
         Arc::new(SinglePortalScene { inverted: false }),
         Arc::new(SinglePortalScene { inverted: true }),
+        Arc::new(InfiniteMovement),
         Arc::new(BasicTwoBallScene),
         Arc::new(BasicBouncingScene {
             seed: 4444,

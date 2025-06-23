@@ -51,16 +51,20 @@ pub fn clip_shapes_on_portal(
     shapes.overlay(&clip_polygon, OverlayRule::Difference, FillRule::EvenOdd)
 }
 
-pub fn i_shape_to_parry_shape(shapes: Shapes<Vec2>) -> impl shape::Shape {
+pub fn i_shape_to_parry_shape(shapes: Shapes<Vec2>) -> Option<impl shape::Shape> {
     let convexes = shapes.triangulate()
         .into_delaunay()
         .to_convex_polygons();
 
-    shape::Compound::new(convexes.into_iter().map(|convex| {
+    if convexes.is_empty() {
+        return None;
+    }
+
+    Some(shape::Compound::new(convexes.into_iter().map(|convex| {
         let shape = shape::ConvexPolygon::from_convex_polyline_unmodified(convex.iter()
             .map(|point| point.to_na())
             .collect_vec()
         ).expect("not empty");
         (na::Isometry2::identity(), shape::SharedShape::new(shape))
-    }).collect())
+    }).collect()))
 }
