@@ -95,10 +95,10 @@ impl SimGenericCollisionInfo {
     fn simple_debug(&self) -> String {
         match self {
             SimGenericCollisionInfo::One(info) => {
-                format!("one({}, dt {}s, idx {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0].object_id)
+                format!("one({}, dt {}s, {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0])
             },
             SimGenericCollisionInfo::Two(info) => {
-                format!("two({}, dt {}s, idx {} on idx {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0].object_id, info.snaps[1].object_id)
+                format!("two({}, dt {}s, {} and {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0], info.snaps[1])
             },
         }
     }
@@ -289,13 +289,15 @@ impl Simulator {
                     &portal_shape,
                     &self.snapshot_motion(snap), &snap_shape,
 
-                    0., 99., false
+                    // TODO: Use real number \o/
+                    0., 15., false
                 ).expect("supported")
             })?;
 
-        let impact_dt = result.time_of_impact;
+        let impact_dt = dbg!(result.time_of_impact);
         let impact_time = impact_dt + snap.time;
         let end_t = self.get_snapshot_portal_traversal_end_t(snap, half_portal_idx);
+        debug_assert!(end_t.is_none_or(|end_t| end_t >= 0.));
         let direction = if result.normal1.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
 
         Some(sg::PortalTraversal {
@@ -379,6 +381,9 @@ impl Simulator {
                     debug_assert_eq!(snapshot.handle, inner_node.previous);
 
                     let time = snapshot.time + partial.delta_age.get();
+                    if snapshot.validity_time_range.is_finished(time) {
+                        return None;
+                    }
                     let pos = snapshot.pos + snapshot.linvel * partial.delta_age.get();
                     let rot = snapshot.rot + snapshot.angvel * partial.delta_age.get();
 
@@ -421,10 +426,13 @@ impl Simulator {
                     .at_most_one().expect("No duplicates")
                 ;
 
+                // We either update the end a previously existing traversal
+                // or we check if there is a new traversal in the future
+                
                 if let Some(previous_traversal) = previous_traversal {
+                    let end_t = self.get_snapshot_portal_traversal_end_t(&snapshot, half_portal_idx);
                     snapshot.portal_traversals.push(sg::PortalTraversal {
-                        duration: previous_traversal.duration
-                            .up_to(self.get_snapshot_portal_traversal_end_t(&snapshot, half_portal_idx)),
+                        duration: previous_traversal.duration.up_to(end_t),
                         ..previous_traversal
                     });
                     dbg!(snapshot.portal_traversals.last().unwrap());
@@ -714,10 +722,6 @@ impl Simulator {
 
         println!();
 
-        // let Some((&timeline_id, &time)) = self.timeline_presents.iter()
-        //     .min_by_key(|&(&tid, &time)| (tid, OF(time)))
-        // else { return ControlFlow::Break(()) };
-
         let leafs = self.snapshots.nodes()
             .filter(|(_, node)| node.children().is_empty())
             .map(|(handle, _)| this.integrate(handle))
@@ -729,10 +733,6 @@ impl Simulator {
             })
             .collect_vec()
         ;
-        
-        // let leafs = leafs.into_iter()
-        //     .collect_vec()
-        // ;
 
         println!("leafs: {}", leafs.iter().join(", "));
 

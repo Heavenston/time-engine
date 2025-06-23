@@ -11,7 +11,7 @@ i_triangle = { version = "0.35.0", features = ["glam"] }
 itertools = "0.14.0"
 nalgebra = "0.33.2"
 ordered-float = "5.0.0"
-parking_lot = "0.12.4"
+parking_lot = { version = "0.12.4", features = ["deadlock_detection"] }
 parry2d = "0.21.1"
 smallvec = { version = "2.0.0-alpha.11", features = ["std", "specialization", "may_dangle", "extract_if"] }
 arrayvec = "0.7.6"

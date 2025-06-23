@@ -44,7 +44,7 @@ pub fn render_simulation(
     // Draw balls
     for snap in simulator.time_query(time)
         .filter_map(|snap| snap.extrapolate_to(time))
-        .filter(|snap| snap.validity_time_range.start().is_none_or(|start| start <= time))
+        .filter(|snap| enable_debug_rendering || snap.validity_time_range.start().is_none_or(|start| start <= time))
     {
         let is_ghost = false;
         let te::sg::Snapshot {
@@ -55,7 +55,7 @@ pub fn render_simulation(
 
         let ball_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
         let cliped_ball_shapes = snap.portal_traversals.iter()
-            .filter(|traversal| !traversal.duration.is_later(time))
+            // .filter(|traversal| !traversal.duration.is_later(time))
             .fold(ball_shapes.clone(), |ball_shapes, traversal| te::clip_shapes_on_portal(
                 ball_shapes,
                 simulator.half_portals()[traversal.half_portal_idx].transform,
