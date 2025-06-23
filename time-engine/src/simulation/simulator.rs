@@ -1,14 +1,13 @@
 use std::{
-    collections::HashMap, iter::{ empty, repeat }, ops::{ ControlFlow }, range::Range, sync::Arc
+    collections::HashMap, iter::{ empty, repeat, zip }, ops::ControlFlow, range::Range, sync::Arc
 };
 
 use nalgebra as na;
 use parking_lot::RwLock;
-use rayon::{ prelude::*, iter as par_iter };
 use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
-use ordered_float::OrderedFloat as OF;
 use smallvec::smallvec;
+use ordered_float::OrderedFloat as OF;
 
 use super::*;
 use sg::GenericNode as _;
@@ -33,32 +32,27 @@ struct CollisionNewState {
 #[derive(Debug, Clone)]
 struct Collision<const N: usize> {
     debug_reason: &'static str,
+    impact_time: f32,
     impact_delta_time: Positive,
     states: [CollisionNewState; N],
 }
 
 #[derive(Debug, Clone)]
-struct SnapshotWithHandle {
-    handle: sg::NodeHandle,
-    snap: sg::Snapshot,
-}
-
-#[derive(Debug, Clone)]
 struct SimCollisionInfo<const N: usize> {
     col: Collision<N>,
-    snaps: [SnapshotWithHandle; N],
+    snaps: [sg::Snapshot; N],
 }
 
 impl<const N: usize> SimCollisionInfo<N> {
     fn child_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
         assert!(N > 0);
         debug_assert!(
-            self.snaps.iter().map(|snap| snap.snap.timeline_id)
+            self.snaps.iter().map(|snap| snap.timeline_id)
                 .tuple_windows::<(_, _)>()
                 .all(|(a, b)| multiverse.is_related(a, b))
         );
         self.snaps.iter()
-            .map(|snap| snap.snap.timeline_id)
+            .map(|snap| snap.timeline_id)
             .max()
             .expect("No empty")
     }
@@ -66,12 +60,12 @@ impl<const N: usize> SimCollisionInfo<N> {
     fn parent_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
         assert!(N > 0);
         debug_assert!(
-            self.snaps.iter().map(|snap| snap.snap.timeline_id)
+            self.snaps.iter().map(|snap| snap.timeline_id)
                 .tuple_windows::<(_, _)>()
                 .all(|(a, b)| multiverse.is_related(a, b))
         );
         self.snaps.iter()
-            .map(|snap| snap.snap.timeline_id)
+            .map(|snap| snap.timeline_id)
             .min()
             .expect("No empty")
     }
@@ -84,6 +78,13 @@ enum SimGenericCollisionInfo {
 }
 
 impl SimGenericCollisionInfo {
+    fn impact_time(&self) -> f32 {
+        match self {
+            Self::One(i) => i.col.impact_time,
+            Self::Two(i) => i.col.impact_time,
+        }
+    }
+
     fn impact_delta_time(&self) -> Positive {
         match self {
             Self::One(i) => i.col.impact_delta_time,
@@ -94,10 +95,10 @@ impl SimGenericCollisionInfo {
     fn simple_debug(&self) -> String {
         match self {
             SimGenericCollisionInfo::One(info) => {
-                format!("one({}, dt {}s, idx {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0].snap.object_id)
+                format!("one({}, dt {}s, idx {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0].object_id)
             },
             SimGenericCollisionInfo::Two(info) => {
-                format!("two({}, dt {}s, idx {} on idx {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0].snap.object_id, info.snaps[1].snap.object_id)
+                format!("two({}, dt {}s, idx {} on idx {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0].object_id, info.snaps[1].object_id)
             },
         }
     }
@@ -153,6 +154,8 @@ pub struct Simulator {
     starts: Ro<Box<[sg::RootNodeHandle]>>,
     half_portals: Vec<HalfPortal>,
 
+    timeline_presents: HashMap<TimelineId, f32>,
+
     /// Cannot be changed without recomputing everything, i think
     max_time: Ro<f32>,
 }
@@ -192,6 +195,10 @@ impl Simulator {
             });
         }
 
+        let timeline_presents = [
+            (multiverse.root(), 0.)
+        ].into();
+
         Self {
             world_state,
             multiverse,
@@ -200,6 +207,8 @@ impl Simulator {
 
             starts: starts.clone().into_boxed_slice().into(),
             half_portals,
+
+            timeline_presents,
 
             max_time: Ro::new(max_time),
         }
@@ -230,18 +239,21 @@ impl Simulator {
             .any(|&child_handle| self.multiverse.is_related(self.snapshots[child_handle].timeline_id(), timeline_id))
     }
 
-    fn get_snapshot_portal_traversal_end_t(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> f32 {
+    fn get_snapshot_portal_traversal_end_t(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> Option<f32> {
         let half_portal = self.half_portals[half_portal_idx];
         let radius = self.world_state.balls()[snap.object_id].radius;
 
         let inv_portal_trans = half_portal.transform.inverse();
         let rel_vel = inv_portal_trans.transform_vector2(snap.linvel);
+        if rel_vel.x.abs() < DEFAULT_EPSILON {
+            return None;
+        }
         let rel_pos = inv_portal_trans.transform_point2(snap.pos);
 
         let t0 = ( radius - rel_pos.x) / rel_vel.x;
         let t1 = (-radius - rel_pos.x) / rel_vel.x;
 
-        snap.time + f32::max(t0, t1)
+        Some(snap.time + f32::max(t0, t1))
     }
 
     fn get_snapshot_portal_traversal(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> Option<sg::PortalTraversal> {
@@ -289,13 +301,14 @@ impl Simulator {
         Some(sg::PortalTraversal {
             half_portal_idx,
             direction,
-            duration: impact_time..end_t,
+            duration: TimeRange::new(Some(impact_time), end_t),
         })
     }
 
     pub fn is_snapshot_ghost(&self, snap: &sg::Snapshot) -> bool {
         snap.portal_traversals.iter()
-            .filter(|traversal| traversal.duration.end <= snap.time)
+            // only take finished traversal (we cant be fully ghost if we are still traversing the portal)
+            .filter(|traversal| traversal.duration.is_finished(snap.time))
             .any(|traversal| {
                 let inv_trans = self.half_portals[traversal.half_portal_idx].transform.inverse();
                 let rel_pos = inv_trans.transform_point2(snap.pos);
@@ -308,7 +321,9 @@ impl Simulator {
             .filter_map(|traversal| {
                 // clamp end time to at least snap.time
                 // as the traversal may have finished in the past
-                let et = f32::max(traversal.duration.end, snap.time);
+                // also
+                // traversals that never finish can never make a ghost
+                let et = traversal.duration.end()?.max(snap.time);
                 let dt = et - snap.time;
                 let pos = snap.pos + snap.linvel * dt;
 
@@ -328,10 +343,30 @@ impl Simulator {
 
         let new_snapshots = match &self.snapshots[handle] {
             sg::Node::Root(root_node) => {
-                // let snapshots = vec![root_node.snapshot.into()];
-                // return Arc::clone(self.integration_cache.write().entry(handle)
-                //     .or_insert(snapshots.into_boxed_slice().into()));
-                vec![root_node.snapshot.into()]
+                let root_snap = root_node.snapshot;
+                vec![sg::Snapshot {
+                    object_id: root_snap.object_id,
+                    handle,
+                    sub_id: 0,
+                    extrapolated_by: Positive::new(0.).expect("Positive"),
+
+                    timeline_id: self.multiverse.root(),
+                    // All objects starts with age 0 at time 0
+                    age: Positive::new(0.).expect("Positive"),
+                    time: 0.,
+
+                    linvel: root_snap.linvel,
+                    angvel: root_snap.angvel,
+
+                    pos: root_snap.pos,
+                    rot: root_snap.rot,
+
+                    // computed later
+                    portal_traversals: smallvec![],
+                    force_transform: Affine2::IDENTITY,
+
+                    validity_time_range: TimeRange::from(..),
+                }]
             },
             sg::Node::Inner(inner_node) => {
                 let snapshots = self.integrate(inner_node.previous);
@@ -341,6 +376,7 @@ impl Simulator {
                 // also remove 'ghosts' (fully behind portals)
                 snapshots.iter().filter_map(|snapshot| {
                     debug_assert!(self.multiverse.is_parent(snapshot.timeline_id, partial.timeline_id));
+                    debug_assert_eq!(snapshot.handle, inner_node.previous);
 
                     let time = snapshot.time + partial.delta_age.get();
                     let pos = snapshot.pos + snapshot.linvel * partial.delta_age.get();
@@ -348,6 +384,9 @@ impl Simulator {
 
                     Some(sg::Snapshot {
                         object_id: snapshot.object_id,
+                        handle,
+                        // Set later
+                        sub_id: !0,
                         timeline_id: partial.timeline_id,
 
                         age: snapshot.age + partial.delta_age,
@@ -359,9 +398,12 @@ impl Simulator {
 
                         pos, rot,
 
+                        // updated later
                         portal_traversals: snapshot.portal_traversals.clone(),
                         force_transform: snapshot.force_transform,
 
+                        // we dont know when the new snapshot will be invalid after
+                        // anymore
                         validity_time_range: TimeRange::new(
                             snapshot.validity_time_range.start(),
                             None,
@@ -381,10 +423,11 @@ impl Simulator {
 
                 if let Some(previous_traversal) = previous_traversal {
                     snapshot.portal_traversals.push(sg::PortalTraversal {
-                        duration: previous_traversal.duration.start..self.get_snapshot_portal_traversal_end_t(&snapshot, half_portal_idx),
+                        duration: previous_traversal.duration
+                            .up_to(self.get_snapshot_portal_traversal_end_t(&snapshot, half_portal_idx)),
                         ..previous_traversal
                     });
-                    dbg!(snapshot.portal_traversals.last());
+                    dbg!(snapshot.portal_traversals.last().unwrap());
 
                     smallvec![snapshot]
                 }
@@ -401,10 +444,10 @@ impl Simulator {
                     through_snapshot.portal_traversals.push(sg::PortalTraversal {
                         half_portal_idx: inp.linked_to,
                         direction: traversal.direction.swap(),
-                        duration: traversal.duration.start + inp.time_offset..traversal.duration.end + inp.time_offset,
+                        duration: traversal.duration.offset(inp.time_offset),
                     });
                     through_snapshot.validity_time_range =
-                        through_snapshot.validity_time_range.from(traversal.duration.start);
+                        through_snapshot.validity_time_range.starting_from(traversal.duration.start());
 
                     smallvec![snapshot, through_snapshot]
                 }
@@ -417,21 +460,30 @@ impl Simulator {
         // Compute validity time ranges
         out_snapshots.retain_mut(|snap| {
             let ghostification = self.compute_snapshot_ghostification_time(snap);
-            if ghostification.is_some_and(|g| g <= 0.) {
-                return false;
-            }
+            // Should be handled by `snap.validity_time_range.is_empty()`
+            // if ghostification.is_some_and(|g| g <= 0.) {
+            //     return false;
+            // }
 
-            snap.portal_traversals.retain(|traversal| traversal.duration.end > snap.time);
+            snap.portal_traversals.retain(|traversal| !traversal.duration.is_finished(snap.time) && !traversal.duration.is_empty());
 
             snap.validity_time_range = ghostification
-                .map(|ghostification| dbg!(dbg!(snap.validity_time_range).to(dbg!(ghostification))))
+                .map(|ghostification| snap.validity_time_range.up_to(Some(ghostification)))
                 .unwrap_or(snap.validity_time_range);
+
+            if snap.validity_time_range.is_empty() {
+                return false;
+            }
 
             true
         });
 
+        for (i, snap) in out_snapshots.iter_mut().enumerate() {
+            snap.sub_id = i;
+        }
+
         if !out_snapshots.is_empty() {
-            println!("object_id = {}, snapshots.len = {}", out_snapshots[0].object_id, out_snapshots.len());
+            println!("handle = {handle}, snaps: {}", out_snapshots.iter().join(" "));
         }
 
         return Arc::clone(self.integration_cache.write().entry(handle)
@@ -457,14 +509,10 @@ impl Simulator {
             })
     }
 
-    pub fn time_query(&self, query_time: f32) -> impl Iterator<Item = (sg::NodeHandle, sg::Snapshot)> {
+    pub fn time_query(&self, query_time: f32) -> impl Iterator<Item = sg::Snapshot> {
         debug_assert!(self.starts.iter().copied().all_unique());
 
-        self.snapshots.nodes()
-            .flat_map(move |(handle, _)|
-                repeat(handle)
-                    .zip(self.time_filtered_integrate(handle, query_time))
-            )
+        self.snapshots.nodes().flat_map(move |(handle, _)| self.time_filtered_integrate(handle, query_time))
     }
 
     /// Return an iterator of all nodes that are in the given timeline
@@ -479,7 +527,7 @@ impl Simulator {
             .inspect(|&link| debug_assert_eq!(self.snapshots[link].timeline_id(), self.multiverse.root()))
             .map(|handle| StackEntry {
                 handle: handle.into(),
-                // Necessarily true as link is a root
+                // Necessarily true as handle is a root
                 is_in_timeline: true,
             })
             .collect_vec();
@@ -531,10 +579,10 @@ impl Simulator {
     }
 
     fn apply_collision_1(&mut self, info: SimCollisionInfo<1>) {
-        let invforcetrans = info.snaps[0].snap.force_transform.inverse();
+        let invforcetrans = info.snaps[0].force_transform.inverse();
         let new_partial = sg::PartialSnapshot {
-            timeline_id: info.snaps[0].snap.timeline_id,
-            delta_age: info.snaps[0].snap.extrapolated_by + info.col.impact_delta_time,
+            timeline_id: info.snaps[0].timeline_id,
+            delta_age: info.snaps[0].extrapolated_by + info.col.impact_delta_time,
             linear_impulse: invforcetrans.transform_vector2(info.col.states[0].linear_impulse) ,
             angular_impulse: info.col.states[0].angular_impulse,
         };
@@ -544,10 +592,10 @@ impl Simulator {
 
     fn apply_collision_2(&mut self, info: SimCollisionInfo<2>) {
         for i in 0..2 {
-            let invforcetrans = info.snaps[i].snap.force_transform.inverse();
+            let invforcetrans = info.snaps[i].force_transform.inverse();
             let new_partial = sg::PartialSnapshot {
-                timeline_id: info.snaps[i].snap.timeline_id,
-                delta_age: info.snaps[i].snap.extrapolated_by + info.col.impact_delta_time,
+                timeline_id: info.snaps[i].timeline_id,
+                delta_age: info.snaps[i].extrapolated_by + info.col.impact_delta_time,
                 linear_impulse: invforcetrans.transform_vector2(info.col.states[i].linear_impulse) ,
                 angular_impulse: info.col.states[i].angular_impulse,
             };
@@ -612,6 +660,7 @@ impl Simulator {
 
         Some(Collision {
             debug_reason: "ball-wall",
+            impact_time: snap.time + impact_dt,
             impact_delta_time: Positive::new(impact_dt).expect("Positive"),
             states: [CollisionNewState { linear_impulse: linacc, ..default() }]
         })
@@ -650,6 +699,7 @@ impl Simulator {
         
         Some(Collision {
             debug_reason: "ball-ball",
+            impact_time: s1.time + impact_dt,
             impact_delta_time: Positive::new(impact_dt).expect("Positive"),
             states: [
                 CollisionNewState { linear_impulse: -impulse / m1, ..default() },
@@ -659,104 +709,103 @@ impl Simulator {
     }
 
     pub fn step(&mut self) -> ControlFlow<(), ()> {
+        // make a non-mutable reference so a `Copy` reference for move closures
         let this = &*self;
 
         println!();
 
+        // let Some((&timeline_id, &time)) = self.timeline_presents.iter()
+        //     .min_by_key(|&(&tid, &time)| (tid, OF(time)))
+        // else { return ControlFlow::Break(()) };
+
         let leafs = self.snapshots.nodes()
             .filter(|(_, node)| node.children().is_empty())
-            .map(|(handle, _)| (handle, self.integrate(handle)))
+            .map(|(handle, _)| this.integrate(handle))
+            .flat_map(|snaps| {
+                (0..snaps.len()).into_iter()
+                .filter_map(move |i| {
+                    snaps[i].extrapolate_to(this.timeline_presents[&snaps[i].timeline_id])
+                })
+            })
             .collect_vec()
         ;
-        let leafs = leafs.iter()
-            .flat_map(|(handle, h)| repeat(*handle).zip(h.iter().cloned()))
-            .collect_vec()
-        ;
-
-        println!("leafs: {}", leafs.iter().map(|(_, snap)| format!("obj {} -> {}s", snap.object_id, snap.time)).join("\n"));
         
-        let timelines_maxs = leafs.iter()
-            .map(|(_, snap)| (snap.timeline_id, snap.time))
-            .into_grouping_map()
-            .max_by_key(|_, &t| OF(t))
-        ;
+        // let leafs = leafs.into_iter()
+        //     .collect_vec()
+        // ;
 
-        println!("timelines: {}", timelines_maxs.iter().map(|(tid, max)| format!("tid {tid} -> {max}s")).join("\n"));
+        println!("leafs: {}", leafs.iter().join(", "));
 
-        let mut leafs = leafs;
-        leafs.retain_mut(|(_, snap)| {
-            if let Some(nsnap) = snap.extrapolate_to(timelines_maxs[&snap.timeline_id]) {
-                *snap = nsnap;
-                true
-            }
-            else {
-                false
-            }
-        });
-        let leafs = leafs;
-     
-        let groups = leafs.par_iter().cloned()
-            .flat_map(|(handle, snap)| {
-                let tid = snap.timeline_id;
-                let t = snap.time;
-                debug_assert_eq!(t, timelines_maxs[&tid]);
+        let worlds: HashMap<TimelineId, Vec<sg::Snapshot>> = leafs.iter()
+            .map(|snap| snap.timeline_id)
+            .unique()
+            .map(|tid| {
+                let t = this.timeline_presents[&tid];
                 let world = this.timeline_query(tid)
-                    .filter(move |&handle_| handle < handle_)
-                    .flat_map(move |handle_| repeat(handle_)
-                        .zip(this.time_filtered_integrate(handle_, t))
+                    .flat_map(move |handle_| 
+                        this.time_filtered_integrate(handle_, t)
+                        .filter_map(move |snap| snap.extrapolate_to(t))
                     )
-                    .filter_map(|(handle, snap)| Some(handle).zip(snap.extrapolate_to(t)))
                     .collect::<Vec<_>>();
-                par_iter::repeat((handle, snap))
-                    .zip(world)
+                (tid, world)
+            })
+            .collect();
+
+        let groups = leafs.iter()
+            .flat_map(|snap| {
+                let world = &worlds[&snap.timeline_id];
+                zip(
+                    repeat(snap),
+                    world.iter().filter(|snap_| snap.id() != snap_.id())
+                )
             })
             .collect::<Vec<_>>()
         ;
 
         println!("ball-ball group count: {}", groups.len());
-        println!("ball-ball groups: {}", groups.iter().map(|((_, s1), (_, s2))| format!("{}-{}s and {}-{}s", s1.object_id, s1.time, s2.object_id, s2.time)).join(",  "));
+        println!("ball-ball groups: {}", groups.iter().map(|(s1, s2)| format!("{s1} and {s2}")).join(", "));
 
         let collision = empty()
             // ball-wall collisions
             .chain(
-                leafs.iter().map(|(handle, snap)| (*handle, snap))
-                .filter_map(|(handle, snap)| {
+                leafs.iter()
+                .filter_map(|snap| {
                     let end = *self.max_time - snap.time;
                     self.cast_ball_wall_collision(snap, 0. .. end)
                     .map(|col| SimCollisionInfo {
                         col,
-                        snaps: [SnapshotWithHandle { handle, snap: snap.clone() }],
+                        snaps: [snap.clone()],
                     })
                     .map(SimGenericCollisionInfo::from)
                 })
             )
             // ball-ball collisions
             .chain(
-                groups.iter()
-                .map(|((h1, s1), (h2, s2))| ((*h1, s1), (*h2, s2)))
-                .filter_map(|((h1, s1), (h2, s2))| {
+                groups.iter().copied()
+                .filter_map(|(s1, s2)| {
                     debug_assert_eq!(s1.time, s2.time);
                     let end = *self.max_time - s1.time;
                     self.cast_ball_ball_collision(s1, s2, 0. .. end)
                     .map(|col| SimCollisionInfo {
                         col,
-                        snaps: [
-                            SnapshotWithHandle { handle: h1, snap: s1.clone() },
-                            SnapshotWithHandle { handle: h2, snap: s2.clone() },
-                        ],
+                        snaps: [s1.clone(), s2.clone()],
                     })
                     .map(SimGenericCollisionInfo::from)
                 })
             )
             // .filter(|col| col.impact_delta_time() < *self.max_time)
-            .min_by_key(|col| col.impact_delta_time())
+            .min_by_key(|col| (col.parent_timeline(&self.multiverse), OF(col.impact_time())))
         ;
 
         let Some(collision) = collision
         else { return ControlFlow::Break(()) };
+        let tid = collision.parent_timeline(&self.multiverse);
 
         println!("Selected collision: {}", collision.simple_debug());
 
+        assert_eq!(collision.parent_timeline(&self.multiverse), collision.child_timeline(&self.multiverse), "Unsupported yet");
+        assert!(self.timeline_presents[&tid] <= collision.impact_time());
+        self.timeline_presents.insert(tid, collision.impact_time());
         self.apply_collision(collision);
         
         ControlFlow::Continue(())

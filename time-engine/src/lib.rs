@@ -9,7 +9,6 @@
 #![expect(dead_code)]
 
 mod world_state;
-use std::{ops::BitAnd, range::{Range, RangeFrom, RangeTo, RangeFull, RangeBounds}};
 
 pub use world_state::*;
 mod simulation;
@@ -22,6 +21,10 @@ mod immutable_util;
 pub(crate) use immutable_util::*;
 mod conversions;
 pub(crate) use conversions::*;
+mod time_range;
+pub use time_range::*;
+
+use std::range::RangeBounds;
 
 pub(crate) use typed_floats::tf32::*;
 
@@ -73,114 +76,11 @@ pub(crate) fn default<T: Default>() -> T {
     T::default()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TimeRange {
-    RangeFull(RangeFull),
-    RangeFrom(RangeFrom<f32>),
-    RangeTo(RangeTo<f32>),
-    Range(Range<f32>),
+pub(crate) fn option_min(a: Option<f32>, b: Option<f32>) -> Option<f32> {
+    a.zip_with(b, f32::min).or(a).or(b)
 }
 
-impl TimeRange {
-    pub fn new(start: Option<f32>, end: Option<f32>) -> Self {
-        match (start, end) {
-            (None, None) => Self::RangeFull(..),
-            (None, Some(end)) => Self::RangeTo(..end),
-            (Some(start), None) => Self::RangeFrom(start..),
-            (Some(start), Some(end)) => Self::Range(start..end),
-        }
-    }
-
-    pub fn start(&self) -> Option<f32> {
-        match self {
-            TimeRange::RangeFrom(range_from) => Some(range_from.start),
-            TimeRange::Range(range) => Some(range.start),
-            _ => None,
-        }
-    }
-
-    pub fn end(&self) -> Option<f32> {
-        match self {
-            TimeRange::RangeTo(range_to) => Some(range_to.end),
-            TimeRange::Range(range) => Some(range.end),
-            _ => None,
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        match self {
-            TimeRange::RangeFull(_) => false,
-            TimeRange::RangeFrom(_) => false,
-            TimeRange::RangeTo(_) => false,
-            TimeRange::Range(r) => r.is_empty(),
-        }
-    }
-
-    pub fn offset(&self, offset: f32) -> Self {
-        Self::new(self.start().map(|start| start + offset), self.end().map(|end| end + offset))
-    }
-
-    pub fn from(&self, from: f32) -> Self {
-        Self::new(Some(self.start().unwrap_or(from).max(from)), self.end())
-    }
-
-    pub fn to(&self, to: f32) -> Self {
-        Self::new(self.start(), Some(self.end().unwrap_or(to).min(to)))
-    }
+pub(crate) fn option_max(a: Option<f32>, b: Option<f32>) -> Option<f32> {
+    a.zip_with(b, f32::max).or(a).or(b)
 }
 
-impl Default for TimeRange {
-    fn default() -> Self {
-        Self::RangeFull(..)
-    }
-}
-
-impl BitAnd for TimeRange {
-    type Output = TimeRange;
-
-    /// Returns a range for values that are in both ranges
-    fn bitand(self, rhs: Self) -> Self::Output {
-        let start = self.start()
-            .zip_with(rhs.start(), f32::max)
-            .or(self.start()).or(rhs.start());
-        let end = self.end()
-            .zip_with(rhs.end(), f32::max)
-            .or(self.end()).or(rhs.end());
-        // Makes sure start <= end
-        let start = end.zip_with(start, f32::max).or(start);
-
-        Self::new(start, end)
-    }
-}
-
-impl RangeBounds<f32> for TimeRange {
-    fn start_bound(&self) -> std::ops::Bound<&f32> {
-        match self {
-            TimeRange::RangeFull(r) => r.start_bound(),
-            TimeRange::RangeFrom(r) => r.start_bound(),
-            TimeRange::RangeTo(r) => r.start_bound(),
-            TimeRange::Range(r) => r.start_bound(),
-        }
-    }
-
-    fn end_bound(&self) -> std::ops::Bound<&f32> {
-        match self {
-            TimeRange::RangeFull(r) => r.end_bound(),
-            TimeRange::RangeFrom(r) => r.end_bound(),
-            TimeRange::RangeTo(r) => r.end_bound(),
-            TimeRange::Range(r) => r.end_bound(),
-        }
-    }
-}
-
-impl From<Range<f32>> for TimeRange {
-    fn from(range: Range<f32>) -> Self {
-        Self::Range(range)
-    }
-}
-
-impl From<RangeFrom<f32>> for TimeRange {
-    fn from(range_from: RangeFrom<f32>) -> Self {
-        Self::RangeFrom(range_from)
-    }
-}

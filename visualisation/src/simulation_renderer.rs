@@ -1,3 +1,5 @@
+use std::ops::RangeBounds;
+
 use macroquad::prelude::*;
 use i_overlay::{core::{fill_rule::FillRule, overlay_rule::OverlayRule}, float::single::SingleFloatOverlay as _, i_shape::base::data::Shapes, mesh::outline::offset::OutlineOffset};
 use time_engine as te;
@@ -40,8 +42,8 @@ pub fn render_simulation(
     draw_rectangle_lines(-2.5, -2.5, world_state.width() + 5., world_state.height() + 5., 5., WHITE);
 
     // Draw balls
-    for snap in simulator.time_query(time).into_iter()
-        .filter_map(|(_, snap)| snap.extrapolate_to(time))
+    for snap in simulator.time_query(time)
+        .filter_map(|snap| snap.extrapolate_to(time))
         .filter(|snap| snap.validity_time_range.start().is_none_or(|start| start <= time))
     {
         let is_ghost = false;
@@ -53,7 +55,7 @@ pub fn render_simulation(
 
         let ball_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
         let cliped_ball_shapes = snap.portal_traversals.iter()
-            // .filter(|traversal| traversal.duration.end >= time)
+            .filter(|traversal| !traversal.duration.is_later(time))
             .fold(ball_shapes.clone(), |ball_shapes, traversal| te::clip_shapes_on_portal(
                 ball_shapes,
                 simulator.half_portals()[traversal.half_portal_idx].transform,
@@ -80,7 +82,8 @@ pub fn render_simulation(
             // }
             if !snap.portal_traversals.is_empty() {
                 let is_real = snap.portal_traversals.iter().any(|traversal| traversal.duration.contains(&time));
-                let color = if is_real { RED } else { PINK };
+                let is_later = snap.portal_traversals.iter().any(|traversal| traversal.duration.is_later(time));
+                let color = if is_real { RED } else if is_later { ORANGE } else { PINK };
 
                 let outline = previous_shape.outline(&i_overlay::mesh::style::OutlineStyle {
                     outer_offset: 0.5,

@@ -1,6 +1,6 @@
 use super::*;
 
-use std::{ fmt::Display, ops::{ Deref, DerefMut, Index }, range::Range, sync::atomic::AtomicU64 };
+use std::{ fmt::Display, ops::{ Deref, DerefMut, Index }, sync::atomic::AtomicU64 };
 
 use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
@@ -10,18 +10,23 @@ pub struct PortalTraversal {
     // TODO: Reduce size to maybe u8 or u16
     pub half_portal_idx: usize,
     pub direction: PortalDirection,
-    pub duration: Range<f32>,
+    pub duration: TimeRange,
 }
 
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub object_id: usize,
+    /// Handle of the snapshot node that 'created' this snapshot
+    pub handle: NodeHandle,
+    /// Each snapshot graph node can create multiple snapshots, each indexed
+    /// by their sub_id
+    pub sub_id: usize,
+    /// Time this snapshot was extrapolated by from its original time
+    pub extrapolated_by: Positive,
 
     pub timeline_id: TimelineId,
     pub age: Positive,
     pub time: f32,
-    /// Time this snapshot was extrapolated from its original time
-    pub extrapolated_by: Positive,
 
     pub linvel: Vec2,
     pub angvel: f32,
@@ -36,6 +41,11 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Uniquely identity this snapshot (even across extroplation)
+    pub fn id(&self) -> (NodeHandle, usize) {
+        (self.handle, self.sub_id)
+    }
+
     pub fn get_transform(&self) -> Affine2 {
         Affine2::from_angle_translation(self.rot, self.pos)
     }
@@ -76,34 +86,16 @@ impl Snapshot {
             pos: self.pos + self.linvel * dt.get(),
             rot: self.rot + self.angvel * dt.get(),
 
-            portal_traversals: self.portal_traversals.iter().copied()
-                // .filter(|traversal| traversal.end_time >= to)
-                .collect(),
+            portal_traversals: self.portal_traversals.clone(),
 
             ..*self
         })
     }
 }
 
-impl From<RootSnapshot> for Snapshot {
-    fn from(value: RootSnapshot) -> Self {
-        Self {
-            object_id: value.object_id,
-
-            pos: value.pos,
-            rot: value.rot,
-
-            linvel: value.linvel,
-            angvel: value.angvel,
-
-            ..default()
-        }
-    }
-}
-
-impl From<&RootSnapshot> for Snapshot {
-    fn from(value: &RootSnapshot) -> Self {
-        Self::from(*value)
+impl Display for Snapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "obj{}({}.{}+{}s)", self.object_id, self.handle.idx, self.sub_id, self.extrapolated_by)
     }
 }
 
@@ -118,7 +110,7 @@ pub struct RootSnapshot {
     pub angvel: f32,
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PartialSnapshot {
     pub timeline_id: TimelineId,
     pub delta_age: Positive,
@@ -201,7 +193,7 @@ pub struct RootNode {
 
 impl GenericNode for RootNode {
     fn timeline_id(&self) -> TimelineId {
-        default()
+        TimelineId::root()
     }
 
     fn previous(&self) -> Option<NodeHandle> {
@@ -218,7 +210,7 @@ impl GenericNode for RootNode {
 
     fn get_partial(&self) -> PartialSnapshot {
         PartialSnapshot {
-            timeline_id: default(),
+            timeline_id: TimelineId::root(),
             delta_age: Positive::new(0.).expect("Positive"),
             linear_impulse: Vec2::ZERO,
             angular_impulse: 0.,
@@ -454,9 +446,9 @@ impl<'a> Iterator for AncestryIterator<'a> {
     type Item = (NodeHandle, &'a Node);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let link = self.latest?;
-        let node = &self.graph[link];
+        let handle = self.latest?;
+        let node = &self.graph[handle];
         self.latest = node.previous();
-        Some((link, node))
+        Some((handle, node))
     }
 }

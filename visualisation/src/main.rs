@@ -293,7 +293,7 @@ impl AppState {
                 ui.horizontal(|ui| {
                     ui.label("Number of timelines:");
                     let active = self.simulator.time_query(self.time).into_iter()
-                        .map(|(handle, _)| self.simulator.snapshots()[handle].timeline_id())
+                        .map(|s| s.timeline_id)
                         .unique()
                         .count();
                     ui.colored_label(egui::Color32::GRAY, format!("{active}/{}", self.simulator.multiverse().len()));
@@ -388,28 +388,22 @@ impl AppState {
                     .sorted_by_key(|&t| OF(t))
                     .join(" -> \n   ");
                 ui.label(format!("Times:\n   {str}"));
-                let (q_min, q_max) = self.simulator.time_query(self.time).into_iter()
-                    .flat_map(|(handle, _)| {
-                        let snaps = self.simulator.integrate(handle);
-                        (0..snaps.len())
-                            .map(move |i| snaps[i].time)
-                    })
+                let (q_min, q_max) = self.simulator.time_query(self.time)
+                    .map(|snap| snap.time)
                     .minmax_by_key(|&t| OF(t)).into_option().unwrap_or_default();
                 ui.label(format!("Queryied: {q_min} - {q_max}"));
                 // ui.separator();
                 // ui.label(format!("{:#?}", self.simulator.multiverse()));
                 {
-                    let pp = self.simulator.time_query(self.time).into_iter()
-                    .map(|(_, snap)| {
-                        format!(
+                    let pp = self.simulator.time_query(self.time)
+                        .map(|snap| {format!(
                             "{} {:?} - {}",
                             snap.object_id,
                             snap.validity_time_range,
                             snap.portal_traversals.iter()
                                 .map(|traversal| format!("{} {:?} {:?}", traversal.half_portal_idx, traversal.direction, traversal.duration))
                                 .join(" - ")
-                        )
-                    }).join("\n");
+                        )}).join("\n");
                     ui.separator();
                     ui.label(format!("{pp}"));
                 }
