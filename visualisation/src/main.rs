@@ -105,10 +105,25 @@ impl AppState {
     fn simulation_step(&mut self) {
         println!("\n#### Start of step {} ####", self.step_count);
         self.step_count += 1;
-        if self.simulator.step().is_break() {
-            self.simulator_finished = true;
+        let mut simulator = std::mem::replace(&mut self.simulator, Simulator::empty());
+        let max_time = simulator.max_time();
+        let result = std::panic::catch_unwind(move || {
+            (simulator.step(), simulator)
+        });
+        match result {
+            Ok((control_flow, simulator)) => {
+                self.simulator = simulator;
+                self.simulator_finished |= control_flow.is_break();
+                println!("#### End of step {} ###", self.step_count-1);
+            },
+            Err(_) => {
+                println!("#### End of step {} ###: PANIC CATCHED", self.step_count-1);
+                self.reset_simulator(Some(max_time));
+                self.auto_step = false;
+                self.auto_full_simulate = false;
+                self.is_paused = true;
+            },
         }
-        println!("#### End of step {} ###", self.step_count-1);
     }
     
     fn update_simulation(&mut self) {

@@ -235,6 +235,10 @@ impl Simulator {
         }
     }
 
+    pub fn empty() -> Self {
+        Self::new(Arc::new(WorldState::new(0., 0.)), 0.)
+    }
+
     pub fn snapshots(&self) -> &sg::SnapshotGraph {
         &self.snapshots
     }
@@ -510,7 +514,7 @@ impl Simulator {
         s2: &sg::Snapshot,
         dt_range: Range<f32>,
     ) -> Option<Collision<2>> {
-        debug_assert!((s1.time - s2.time).abs() <= DEFAULT_EPSILON);
+        debug_assert!((s1.time - s2.time).abs() <= DEFAULT_EPSILON, "{} != {}", s1.time, s2.time);
         debug_assert!(self.multiverse.is_related(s1.timeline_id, s2.timeline_id));
 
         let rad1 = self.world_state.balls()[s1.object_id].radius;
@@ -757,7 +761,7 @@ impl Simulator {
             .chain(
                 groups.iter().copied()
                 .filter_map(|(s1, s2)| {
-                    debug_assert!((s1.time - s2.time).abs() <= DEFAULT_EPSILON);
+                    debug_assert!((s1.time - s2.time).abs() <= DEFAULT_EPSILON, "{} != {}", s1.time, s2.time);
                     let end = f32::min(*self.max_time - s1.time, MAX_DT);
                     self.cast_ball_ball_collision(s1, s2, 0. .. end)
                     .map(|col| CollisionSimulationEvent {
@@ -787,7 +791,7 @@ impl Simulator {
 
         assert_eq!(collision.parent_timeline(&self.multiverse), collision.child_timeline(&self.multiverse), "Unsupported yet");
         assert!(self.timeline_presents[&tid] <= collision.impact_time());
-        self.timeline_presents.insert(tid, collision.impact_time());
+        self.timeline_presents.insert(tid, collision.impact_time() + DEFAULT_EPSILON);
         self.apply_collision(collision);
         
         ControlFlow::Continue(())
