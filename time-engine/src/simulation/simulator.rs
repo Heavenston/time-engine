@@ -38,12 +38,12 @@ struct Collision<const N: usize> {
 }
 
 #[derive(Debug, Clone)]
-struct SimCollisionInfo<const N: usize> {
+struct CollisionSimulationEvent<const N: usize> {
     col: Collision<N>,
     snaps: [sg::Snapshot; N],
 }
 
-impl<const N: usize> SimCollisionInfo<N> {
+impl<const N: usize> CollisionSimulationEvent<N> {
     fn child_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
         assert!(N > 0);
         debug_assert!(
@@ -72,68 +72,83 @@ impl<const N: usize> SimCollisionInfo<N> {
 }
 
 #[derive(Debug, Clone)]
-enum SimGenericCollisionInfo {
-    One(SimCollisionInfo<1>),
-    Two(SimCollisionInfo<2>),
+struct NewPortalTraversalData {
+    half_portal_idx: usize,
+    direction: PortalDirection,
+    delta_range: Range<Positive>,
+    range: Range<f32>,
 }
 
-impl SimGenericCollisionInfo {
+#[derive(Debug, Clone)]
+struct PortalTraversalCollisionEvent {
+    data: NewPortalTraversalData,
+    snap: sg::Snapshot,
+}
+
+#[derive(Debug, Clone)]
+enum GenericSimulationEventInfo {
+    OneCollision(CollisionSimulationEvent<1>),
+    TwoCollision(CollisionSimulationEvent<2>),
+    PortalTraversal(PortalTraversalCollisionEvent),
+}
+
+impl GenericSimulationEventInfo {
     fn impact_time(&self) -> f32 {
         match self {
-            Self::One(i) => i.col.impact_time,
-            Self::Two(i) => i.col.impact_time,
+            Self::OneCollision(i) => i.col.impact_time,
+            Self::TwoCollision(i) => i.col.impact_time,
+            Self::PortalTraversal(i) => i.data.range.start,
         }
     }
 
     fn impact_delta_time(&self) -> Positive {
         match self {
-            Self::One(i) => i.col.impact_delta_time,
-            Self::Two(i) => i.col.impact_delta_time,
+            Self::OneCollision(i) => i.col.impact_delta_time,
+            Self::TwoCollision(i) => i.col.impact_delta_time,
+            Self::PortalTraversal(i) => i.data.delta_range.start,
         }
     }
 
     fn simple_debug(&self) -> String {
         match self {
-            SimGenericCollisionInfo::One(info) => {
+            GenericSimulationEventInfo::OneCollision(info) => {
                 format!("one({}, dt {}s, {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0])
             },
-            SimGenericCollisionInfo::Two(info) => {
+            GenericSimulationEventInfo::TwoCollision(info) => {
                 format!("two({}, dt {}s, {} and {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0], info.snaps[1])
             },
-        }
-    }
-
-    fn handles(&self) -> AutoSmallVec<sg::NodeHandle> {
-        match self {
-            SimGenericCollisionInfo::One(info) => info.snaps.iter().map(|snap| snap.handle).collect(),
-            SimGenericCollisionInfo::Two(info) => info.snaps.iter().map(|snap| snap.handle).collect(),
+            Self::PortalTraversal(info) => {
+                format!("portal_traversal(range {:?}, {} on portal {})", info.data.range, info.snap, info.data.half_portal_idx)
+            },
         }
     }
 
     fn child_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
         match self {
-            SimGenericCollisionInfo::One(sim) => sim.child_timeline(multiverse),
-            SimGenericCollisionInfo::Two(sim) => sim.child_timeline(multiverse),
+            Self::OneCollision(sim) => sim.child_timeline(multiverse),
+            Self::TwoCollision(sim) => sim.child_timeline(multiverse),
+            Self::PortalTraversal(i) => i.snap.timeline_id,
         }
     }
 
     fn parent_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
         match self {
-            SimGenericCollisionInfo::One(sim) => sim.parent_timeline(multiverse),
-            SimGenericCollisionInfo::Two(sim) => sim.parent_timeline(multiverse),
+            Self::OneCollision(sim) => sim.parent_timeline(multiverse),
+            Self::TwoCollision(sim) => sim.parent_timeline(multiverse),
+            Self::PortalTraversal(i) => i.snap.timeline_id,
         }
     }
 }
 
-impl From<SimCollisionInfo<1>> for SimGenericCollisionInfo {
-    fn from(value: SimCollisionInfo<1>) -> Self {
-        Self::One(value)
+impl From<CollisionSimulationEvent<1>> for GenericSimulationEventInfo {
+    fn from(value: CollisionSimulationEvent<1>) -> Self {
+        Self::OneCollision(value)
     }
 }
 
-impl From<SimCollisionInfo<2>> for SimGenericCollisionInfo {
-    fn from(value: SimCollisionInfo<2>) -> Self {
-        Self::Two(value)
+impl From<CollisionSimulationEvent<2>> for GenericSimulationEventInfo {
+    fn from(value: CollisionSimulationEvent<2>) -> Self {
+        Self::TwoCollision(value)
     }
 }
 
@@ -248,7 +263,7 @@ impl Simulator {
     pub fn is_snapshot_ghost(&self, snap: &sg::Snapshot) -> bool {
         snap.portal_traversals.iter()
             // only take finished traversal (we cant be fully ghost if we are still traversing the portal)
-            .filter(|traversal| traversal.duration.is_finished(snap.time))
+            .filter(|traversal| traversal.range.is_finished(snap.time))
             .any(|traversal| {
                 let inv_trans = self.half_portals[traversal.half_portal_idx].transform.inverse();
                 let rel_pos = inv_trans.transform_point2(snap.pos);
@@ -263,7 +278,7 @@ impl Simulator {
                 // as the traversal may have finished in the past
                 // also
                 // traversals that never finish can never make a ghost
-                let et = traversal.duration.end.max(snap.time);
+                let et = traversal.range.end.max(snap.time);
                 let dt = et - snap.time;
                 let pos = snap.pos + snap.linvel * dt;
 
@@ -310,149 +325,33 @@ impl Simulator {
             },
             sg::Node::Inner(inner_node) => {
                 let snapshots = self.integrate(inner_node.previous);
-                let partial = inner_node.partial;
+                let partial = &inner_node.partial;
 
                 // applies the 'partial' to all snapshots
                 // also remove 'ghosts' (fully behind portals)
                 snapshots.iter().filter_map(|snapshot| {
-                    debug_assert!(self.multiverse.is_parent(snapshot.timeline_id, partial.timeline_id));
                     debug_assert_eq!(snapshot.handle, inner_node.previous);
 
                     let time = snapshot.time + partial.delta_age.get();
                     if snapshot.validity_time_range.is_finished(time) {
                         return None;
                     }
-                    let pos = snapshot.pos + snapshot.linvel * partial.delta_age.get();
-                    let rot = snapshot.rot + snapshot.angvel * partial.delta_age.get();
+
+                    let mut new_snapshot = snapshot.clone();
+                    new_snapshot.integrate_by(partial.delta_age);
 
                     Some(sg::Snapshot {
-                        object_id: snapshot.object_id,
                         handle,
-                        // Corrected later
-                        sub_id: snapshot.sub_id,
-                        timeline_id: partial.timeline_id,
-
-                        age: snapshot.age + partial.delta_age,
-                        time,
-                        extrapolated_by: Positive::new(0.).expect("positive"),
 
                         linvel: snapshot.linvel + snapshot.force_transform.transform_vector2(partial.linear_impulse),
                         angvel: snapshot.angvel + partial.angular_impulse,
 
-                        pos, rot,
-
-                        // updated later
-                        portal_traversals: snapshot.portal_traversals.iter().copied()
-                            // .filter(|traversal| !traversal.duration.is_finished(time))
-                            .collect(),
-                        force_transform: snapshot.force_transform,
-
-                        // we dont know when the new snapshot will be invalid after
-                        // anymore
-                        validity_time_range: TimeRange::new(
-                            snapshot.validity_time_range.start(),
-                            None,
-                        ),
+                        ..new_snapshot
                     })
                 }).collect_vec()
             },
         };
         let mut out_snapshots = new_snapshots;
-
-        for half_portal_idx in 0..self.half_portals.len() {
-            dbg!(half_portal_idx, &out_snapshots.len());
-            out_snapshots = out_snapshots.into_iter().flat_map(|mut snapshot| -> SmallVec<_, 2> {
-                let previous_traversals = snapshot.portal_traversals
-                    .extract_if(|snap| snap.half_portal_idx == half_portal_idx);
-                #[cfg(debug_assertions)]
-                let previous_traversal = previous_traversals.at_most_one().expect("No duplicates");
-                #[cfg(not(debug_assertions))]
-                let previous_traversal = previous_traversals.take(1).next();
-
-                let new_traversal = self.get_snapshot_portal_traversal(&snapshot, half_portal_idx);
-
-                match dbg!(previous_traversal, new_traversal) {
-                (None, None) => {
-                    smallvec![snapshot]
-                },
-                (None, Some(new_traversal)) => {
-                    let mut through_snapshot = snapshot.clone();
-
-                    let inp = &self.half_portals[half_portal_idx];
-                    let outp = &self.half_portals[inp.linked_to];
-
-                    let out_traversal = snapshot.portal_traversals.iter()
-                        .find(|traversal| traversal.half_portal_idx == inp.linked_to);
-                    assert_eq!(out_traversal, None, "Unimplemented yet");
-
-                    snapshot.portal_traversals.push(sg::PortalTraversal {
-                        half_portal_idx: half_portal_idx,
-                        direction: new_traversal.direction,
-                        duration: new_traversal.duration,
-                        is_swaped: false,
-                    });
-
-                    through_snapshot.apply_force_transform(outp.transform * inp.transform.inverse());
-                    through_snapshot.portal_traversals.retain(|traversal| traversal.half_portal_idx != inp.linked_to);
-                    through_snapshot.portal_traversals.push(sg::PortalTraversal {
-                        half_portal_idx: inp.linked_to,
-                        direction: new_traversal.direction.swap(),
-                        duration: new_traversal.duration.offset(inp.time_offset),
-                        is_swaped: true,
-                    });
-                    through_snapshot.validity_time_range = through_snapshot.validity_time_range.at_least_from(
-                        Some(new_traversal.duration.start)
-                    );
-
-                    smallvec![snapshot, through_snapshot]
-                },
-                (Some(previous_traversal), None) => {
-                    if previous_traversal.is_swaped {
-                        smallvec![]
-                    }
-                    else {
-                        smallvec![snapshot]
-                    }
-                },
-                (Some(previous_traversal), Some(new_traversal)) => {
-                    snapshot.portal_traversals.push(sg::PortalTraversal {
-                        duration: new_traversal.duration,
-                        ..previous_traversal
-                    });
-                    dbg!(snapshot.portal_traversals.last().unwrap());
-
-                    smallvec![snapshot]
-                },
-                }
-            }).collect();
-            dbg!(&out_snapshots.len());
-            dbg!(&out_snapshots);
-
-            out_snapshots.iter().for_each(|snap| {
-                debug_assert!(snap.portal_traversals.iter().map(|traversal| traversal.half_portal_idx).all_unique(), "Duplicate portal traversals");
-            });
-        }
-
-        // Compute validity time ranges
-        out_snapshots.retain_mut(|snap| {
-            let ghostification = self.compute_snapshot_ghostification_time(snap);
-            // Should be handled by `snap.validity_time_range.is_empty()`
-            // if ghostification.is_some_and(|g| g <= 0.) {
-            //     return false;
-            // }
-
-            snap.portal_traversals.retain(|traversal| !traversal.duration.is_finished(snap.time) && !traversal.duration.is_empty());
-
-            snap.validity_time_range = ghostification
-                .map(|ghostification| snap.validity_time_range.at_most_to(Some(ghostification)))
-                .unwrap_or(snap.validity_time_range);
-
-            if snap.validity_time_range.is_empty() {
-                return false;
-            }
-
-            true
-        });
 
         for (i, snap) in out_snapshots.iter_mut().enumerate() {
             snap.sub_id = i;
@@ -728,41 +627,52 @@ impl Simulator {
         })
     }
 
-    fn apply_collision_1(&mut self, info: SimCollisionInfo<1>) {
-        let invforcetrans = info.snaps[0].force_transform.inverse();
+    fn apply_collision_1(&mut self, event: CollisionSimulationEvent<1>) {
+        debug_assert!(self.snapshots[event.snaps[0].handle].children().is_empty());
+
+        let invforcetrans = event.snaps[0].force_transform.inverse();
         let new_partial = sg::PartialSnapshot {
-            timeline_id: info.snaps[0].timeline_id,
-            delta_age: info.snaps[0].extrapolated_by + info.col.impact_delta_time,
-            linear_impulse: invforcetrans.transform_vector2(info.col.states[0].linear_impulse) ,
-            angular_impulse: info.col.states[0].angular_impulse,
+            delta_age: event.snaps[0].extrapolated_by + event.col.impact_delta_time,
+            linear_impulse: invforcetrans.transform_vector2(event.col.states[0].linear_impulse) ,
+            angular_impulse: event.col.states[0].angular_impulse,
+            portal_traversal: smallvec![],
         };
 
-        let n = self.snapshots.insert(new_partial, info.snaps[0].handle);
+        let n = self.snapshots.insert(new_partial, event.snaps[0].handle);
         println!("Created handle {n}");
     }
 
-    fn apply_collision_2(&mut self, info: SimCollisionInfo<2>) {
+    fn apply_collision_2(&mut self, event: CollisionSimulationEvent<2>) {
         for i in 0..2 {
-            let invforcetrans = info.snaps[i].force_transform.inverse();
+            debug_assert!(self.snapshots[event.snaps[i].handle].children().is_empty());
+
+            let invforcetrans = event.snaps[i].force_transform.inverse();
             let new_partial = sg::PartialSnapshot {
-                timeline_id: info.snaps[i].timeline_id,
-                delta_age: info.snaps[i].extrapolated_by + info.col.impact_delta_time,
-                linear_impulse: invforcetrans.transform_vector2(info.col.states[i].linear_impulse) ,
-                angular_impulse: info.col.states[i].angular_impulse,
+                delta_age: event.snaps[i].extrapolated_by + event.col.impact_delta_time,
+                linear_impulse: invforcetrans.transform_vector2(event.col.states[i].linear_impulse) ,
+                angular_impulse: event.col.states[i].angular_impulse,
+                portal_traversal: smallvec![],
             };
 
-            let n = self.snapshots.insert(new_partial, info.snaps[i].handle);
+            let n = self.snapshots.insert(new_partial, event.snaps[i].handle);
             println!("Created handle {n}");
         }
     }
 
-    fn apply_collision(&mut self, info: SimGenericCollisionInfo) {
+    fn apply_portal_traversal(&mut self, event: PortalTraversalCollisionEvent) {
+        todo!()
+    }
+
+    fn apply_collision(&mut self, info: GenericSimulationEventInfo) {
         match info {
-            SimGenericCollisionInfo::One(info) => {
-                self.apply_collision_1(info);
+            GenericSimulationEventInfo::OneCollision(event) => {
+                self.apply_collision_1(event);
             },
-            SimGenericCollisionInfo::Two(info) => {
-                self.apply_collision_2(info);
+            GenericSimulationEventInfo::TwoCollision(event) => {
+                self.apply_collision_2(event);
+            },
+            GenericSimulationEventInfo::PortalTraversal(event) => {
+                self.apply_portal_traversal(event);
             },
         }
     }
@@ -836,11 +746,11 @@ impl Simulator {
                 .filter_map(|snap| {
                     let end = f32::min(*self.max_time - snap.time, MAX_DT);
                     self.cast_ball_wall_collision(snap, 0. .. end)
-                    .map(|col| SimCollisionInfo {
+                    .map(|col| CollisionSimulationEvent {
                         col,
                         snaps: [snap.clone()],
                     })
-                    .map(SimGenericCollisionInfo::from)
+                    .map(GenericSimulationEventInfo::from)
                 })
             )
             // ball-ball collisions
@@ -850,11 +760,11 @@ impl Simulator {
                     debug_assert!((s1.time - s2.time).abs() <= DEFAULT_EPSILON);
                     let end = f32::min(*self.max_time - s1.time, MAX_DT);
                     self.cast_ball_ball_collision(s1, s2, 0. .. end)
-                    .map(|col| SimCollisionInfo {
+                    .map(|col| CollisionSimulationEvent {
                         col,
                         snaps: [s1.clone(), s2.clone()],
                     })
-                    .map(SimGenericCollisionInfo::from)
+                    .map(GenericSimulationEventInfo::from)
                 })
             )
             .inspect(|col| debug_assert!(col.impact_delta_time() <= MAX_DT))

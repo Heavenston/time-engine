@@ -406,7 +406,7 @@ impl AppState {
                                     "{} {:?} {:?}{}",
                                     traversal.half_portal_idx,
                                     traversal.direction,
-                                    traversal.duration,
+                                    traversal.range,
                                     if traversal.is_swaped { " swapped" } else { "" }
                                 ))
                                 .join(" - ")

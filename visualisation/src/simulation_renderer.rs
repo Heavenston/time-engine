@@ -55,7 +55,7 @@ pub fn render_simulation(
 
         let ball_shapes: Shapes<Vec2> = vec![vec![te::circle_polygon(pos, rad, 30)]];
         let cliped_ball_shapes = snap.portal_traversals.iter()
-            .filter(|traversal| enable_debug_rendering || !traversal.duration.is_later(time))
+            .filter(|traversal| enable_debug_rendering || !traversal.range.is_later(time))
             .fold(ball_shapes.clone(), |ball_shapes, traversal| te::clip_shapes_on_portal(
                 ball_shapes,
                 simulator.half_portals()[traversal.half_portal_idx].transform,
@@ -81,8 +81,8 @@ pub fn render_simulation(
             //     draw_shapes(Vec2::ZERO, &outline2, color.with_alpha(0.9));
             // }
             if !snap.portal_traversals.is_empty() {
-                let is_real = snap.portal_traversals.iter().any(|traversal| traversal.duration.contains(&time));
-                let is_later = snap.portal_traversals.iter().any(|traversal| traversal.duration.is_later(time));
+                let is_real = snap.portal_traversals.iter().any(|traversal| traversal.range.contains(&time));
+                let is_later = snap.portal_traversals.iter().any(|traversal| traversal.range.is_later(time));
                 let color = if is_real { RED } else if is_later { ORANGE } else { PINK };
 
                 let outline = previous_shape.outline(&i_overlay::mesh::style::OutlineStyle {

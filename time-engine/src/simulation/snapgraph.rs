@@ -10,7 +10,7 @@ pub struct PortalTraversal {
     // TODO: Reduce size to maybe u8 or u16
     pub half_portal_idx: usize,
     pub direction: PortalDirection,
-    pub duration: Range<f32>,
+    pub range: Range<f32>,
     pub is_swaped: bool,
 }
 
@@ -38,6 +38,7 @@ pub struct Snapshot {
     pub portal_traversals: AutoSmallVec<PortalTraversal>,
     pub force_transform: Affine2,
 
+    #[deprecated]
     pub validity_time_range: TimeRange,
 }
 
@@ -71,6 +72,14 @@ impl Snapshot {
         self
     }
 
+    pub fn integrate_by(&mut self, delta: Positive) {
+        self.pos += self.linvel * delta.get();
+        self.rot += self.angvel * delta.get();
+        self.age += delta;
+        self.time += delta.get();
+    }
+
+    #[deprecated]
     pub fn extrapolate_to(&self, to: f32) -> Option<Self> {
         let to = if (to - self.time).abs() <= DEFAULT_EPSILON { self.time } else { to };
         let Ok(dt) = Positive::new(to - self.time)
@@ -114,19 +123,46 @@ pub struct RootSnapshot {
     pub angvel: f32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PartialSnapshot {
-    pub timeline_id: TimelineId,
-    pub delta_age: Positive,
-    pub linear_impulse: Vec2,
-    pub angular_impulse: f32,
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartialPortalTraversal {
+    pub half_portal_idx: usize,
+    pub in_direction: PortalDirection,
+    pub sub_id_in: usize,
+    pub sub_id_out: usize,
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartialSnapshot {
+    /// How much time *after* the previous snapshot does this one
+    /// happens in local time
+    pub delta_age: Positive,
+    /// Is in *local* space
+    pub linear_impulse: Vec2,
+    /// Is in *local* space... but because there is never any mirroring
+    /// this is the same as global space
+    pub angular_impulse: f32,
+    /// After the impulse is applied this is the list of current portal traversals
+    pub portal_traversal: AutoSmallVec<PartialPortalTraversal>,
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct NodeHandle {
     #[cfg(debug_assertions)]
     graph_id: u64,
     idx: usize,
+}
+
+impl PartialOrd for NodeHandle {
+    #[cfg(debug_assertions)]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        (self.graph_id != other.graph_id).then_some(())
+            .and_then(|()| self.idx.partial_cmp(&other.idx))
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.idx.partial_cmp(&other.idx)
+    }
 }
 
 impl Display for NodeHandle {
@@ -182,11 +218,14 @@ impl From<InnerNodeHandle> for NodeHandle {
 }
 
 pub trait GenericNode {
-    fn timeline_id(&self) -> TimelineId;
     fn previous(&self) -> Option<NodeHandle>;
     fn children(&self) -> &[InnerNodeHandle];
     fn children_mut(&mut self) -> &mut Vec<InnerNodeHandle>;
-    fn get_partial(&self) -> PartialSnapshot;
+
+    #[deprecated]
+    fn timeline_id(&self) -> TimelineId {
+        TimelineId::root()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -196,10 +235,6 @@ pub struct RootNode {
 }
 
 impl GenericNode for RootNode {
-    fn timeline_id(&self) -> TimelineId {
-        TimelineId::root()
-    }
-
     fn previous(&self) -> Option<NodeHandle> {
         None
     }
@@ -211,15 +246,6 @@ impl GenericNode for RootNode {
     fn children_mut(&mut self) -> &mut Vec<InnerNodeHandle> {
         &mut self.children
     }
-
-    fn get_partial(&self) -> PartialSnapshot {
-        PartialSnapshot {
-            timeline_id: TimelineId::root(),
-            delta_age: Positive::new(0.).expect("Positive"),
-            linear_impulse: Vec2::ZERO,
-            angular_impulse: 0.,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -230,10 +256,6 @@ pub struct InnerNode {
 }
 
 impl GenericNode for InnerNode {
-    fn timeline_id(&self) -> TimelineId {
-        self.partial.timeline_id
-    }
-
     fn previous(&self) -> Option<NodeHandle> {
         Some(self.previous)
     }
@@ -244,10 +266,6 @@ impl GenericNode for InnerNode {
 
     fn children_mut(&mut self) -> &mut Vec<InnerNodeHandle> {
         &mut self.children
-    }
-
-    fn get_partial(&self) -> PartialSnapshot {
-        self.partial
     }
 }
 
@@ -297,6 +315,7 @@ pub struct SnapshotGraph {
     #[cfg(debug_assertions)]
     id: u64,
     nodes: Vec<Node>,
+    leafs: Vec<NodeHandle>,
 }
 
 impl SnapshotGraph {
@@ -305,6 +324,7 @@ impl SnapshotGraph {
             #[cfg(debug_assertions)]
             id: GRAPH_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             nodes: default(),
+            leafs: vec![]
         }
     }
 
@@ -349,16 +369,25 @@ impl SnapshotGraph {
             .map(|(idx, node)| (self.handle(idx), node))
     }
 
+    pub fn leafs(&self) -> &[NodeHandle] {
+        &self.leafs
+    }
+
     pub fn insert_root(&mut self, snapshot: RootSnapshot) -> RootNodeHandle {
         self.nodes.push(RootNode {
             snapshot,
             children: vec![],
         }.into());
-        self.root_handle(self.nodes.len() - 1)
+        let handle = self.root_handle(self.nodes.len() - 1);
+        self.leafs.push(handle.into());
+        handle
     }
 
     pub fn insert(&mut self, partial: PartialSnapshot, previous: impl Into<NodeHandle>) -> InnerNodeHandle {
         let previous = previous.into();
+        if let Some((leaf_idx, _)) = self.leafs.iter().find_position(|&&handle_| previous == handle_) {
+            self.leafs.remove(leaf_idx);
+        }
 
         self.nodes.push(InnerNode {
             partial,
@@ -369,17 +398,17 @@ impl SnapshotGraph {
 
         self.nodes[previous.idx].children_mut().push(handle);
 
-        // NOTE: Imperfect test
-        debug_assert!(
-            self[previous].timeline_id() <= partial.timeline_id,
-            "A timeline parent must have a parent timeline",
-        );
-        debug_assert!(
-            self[previous].children().iter()
-                .map(|child| self[child].timeline_id())
-                .all_unique(),
-            "A node cannot have multiple nodes on the same timeline",
-        );
+        // // NOTE: Imperfect test
+        // debug_assert!(
+        //     self[previous].timeline_id() <= partial.timeline_id,
+        //     "A timeline parent must have a parent timeline",
+        // );
+        // debug_assert!(
+        //     self[previous].children().iter()
+        //         .map(|child| self[child].timeline_id())
+        //         .all_unique(),
+        //     "A node cannot have multiple nodes on the same timeline",
+        // );
 
         handle
     }
