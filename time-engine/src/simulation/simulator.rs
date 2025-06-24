@@ -245,87 +245,6 @@ impl Simulator {
             .any(|&child_handle| self.multiverse.is_related(self.snapshots[child_handle].timeline_id(), timeline_id))
     }
 
-    fn get_snapshot_portal_traversal_end_dt(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> Option<Positive> {
-        let half_portal = self.half_portals[half_portal_idx];
-        let radius = self.world_state.balls()[snap.object_id].radius;
-
-        let inv_portal_trans = half_portal.transform.inverse();
-        let rel_vel = inv_portal_trans.transform_vector2(snap.linvel);
-        let rel_pos = inv_portal_trans.transform_point2(snap.pos);
-
-        if rel_vel.x.abs() < DEFAULT_EPSILON {
-            if rel_pos.x.abs() <= radius {
-                Some(Positive::new(f32::INFINITY).expect("Positive"))
-            }
-            else {
-                None
-            }
-        }
-        else {
-            let t0 = ( radius - rel_pos.x) / rel_vel.x;
-            let t1 = (-radius - rel_pos.x) / rel_vel.x;
-
-            let max = f32::max(t0, t1);
-            if max < 0. {
-                None
-            }
-            else {
-                Some(Positive::new(max).expect("Positive"))
-            }
-        }
-    }
-
-    fn get_snapshot_portal_traversal(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> Option<PortalTraversalCheckResult> {
-        let snap_shape = self.snapshot_collision_shape(snap);
-        let portal = self.half_portals[half_portal_idx];
-        let portal_shape = parry2d::shape::Polyline::new(vec![
-            na::point![0., -portal.height / 2.],
-            na::point![0., portal.height / 2.],
-        ], None);
-        let portal_isometry = affine_to_isometry(portal.transform);
-
-        let contact = parry2d::query::contact(
-            &affine_to_isometry(self.snapshot_affine(snap)), &snap_shape,
-            &portal_isometry, &portal_shape,
-            0.
-        ).expect("supported");
-
-        let result = contact
-            .map(|contact| {
-                parry2d::query::ShapeCastHit {
-                    time_of_impact: 0.,
-                    witness1: contact.point1,
-                    witness2: contact.point2,
-                    normal1: contact.normal1,
-                    normal2: contact.normal2,
-                    // unused anyway
-                    status: parry2d::query::ShapeCastStatus::Converged,
-                }
-            })
-            .or_else(|| {
-                parry2d::query::cast_shapes_nonlinear(
-                    &parry2d::query::NonlinearRigidMotion::constant_position(portal_isometry),
-                    &portal_shape,
-                    &self.snapshot_motion(snap), &snap_shape,
-
-                    // TODO: Use real number \o/
-                    0., 15., true
-                ).expect("supported")
-            })?;
-
-        let impact_dt = dbg!(result.time_of_impact);
-        let impact_time = impact_dt + snap.time;
-        let end_dt = self.get_snapshot_portal_traversal_end_dt(snap, half_portal_idx)
-            .expect("Collision exists");
-        let end_t = snap.time + end_dt.get();
-        let direction = if result.normal1.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
-
-        Some(PortalTraversalCheckResult {
-            direction,
-            duration: impact_time..end_t,
-        })
-    }
-
     pub fn is_snapshot_ghost(&self, snap: &sg::Snapshot) -> bool {
         snap.portal_traversals.iter()
             // only take finished traversal (we cant be fully ghost if we are still traversing the portal)
@@ -635,45 +554,6 @@ impl Simulator {
         })
     }
 
-    fn apply_collision_1(&mut self, info: SimCollisionInfo<1>) {
-        let invforcetrans = info.snaps[0].force_transform.inverse();
-        let new_partial = sg::PartialSnapshot {
-            timeline_id: info.snaps[0].timeline_id,
-            delta_age: info.snaps[0].extrapolated_by + info.col.impact_delta_time,
-            linear_impulse: invforcetrans.transform_vector2(info.col.states[0].linear_impulse) ,
-            angular_impulse: info.col.states[0].angular_impulse,
-        };
-
-        let n = self.snapshots.insert(new_partial, info.snaps[0].handle);
-        println!("Created handle {n}");
-    }
-
-    fn apply_collision_2(&mut self, info: SimCollisionInfo<2>) {
-        for i in 0..2 {
-            let invforcetrans = info.snaps[i].force_transform.inverse();
-            let new_partial = sg::PartialSnapshot {
-                timeline_id: info.snaps[i].timeline_id,
-                delta_age: info.snaps[i].extrapolated_by + info.col.impact_delta_time,
-                linear_impulse: invforcetrans.transform_vector2(info.col.states[i].linear_impulse) ,
-                angular_impulse: info.col.states[i].angular_impulse,
-            };
-
-            let n = self.snapshots.insert(new_partial, info.snaps[i].handle);
-            println!("Created handle {n}");
-        }
-    }
-
-    fn apply_collision(&mut self, info: SimGenericCollisionInfo) {
-        match info {
-            SimGenericCollisionInfo::One(info) => {
-                self.apply_collision_1(info);
-            },
-            SimGenericCollisionInfo::Two(info) => {
-                self.apply_collision_2(info);
-            },
-        }
-    }
-
     fn snapshot_collision_shape(&self, snap: &sg::Snapshot) -> impl parry2d::shape::Shape {
         let radius = self.world_state.balls()[snap.object_id].radius;
         parry2d::shape::Ball::new(radius)
@@ -765,6 +645,126 @@ impl Simulator {
                 CollisionNewState { linear_impulse:  impulse / m2, ..default() },
             ],
         })
+    }
+
+    fn get_snapshot_portal_traversal_end_dt(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> Option<Positive> {
+        let half_portal = self.half_portals[half_portal_idx];
+        let radius = self.world_state.balls()[snap.object_id].radius;
+
+        let inv_portal_trans = half_portal.transform.inverse();
+        let rel_vel = inv_portal_trans.transform_vector2(snap.linvel);
+        let rel_pos = inv_portal_trans.transform_point2(snap.pos);
+
+        if rel_vel.x.abs() < DEFAULT_EPSILON {
+            if rel_pos.x.abs() <= radius {
+                Some(Positive::new(f32::INFINITY).expect("Positive"))
+            }
+            else {
+                None
+            }
+        }
+        else {
+            let t0 = ( radius - rel_pos.x) / rel_vel.x;
+            let t1 = (-radius - rel_pos.x) / rel_vel.x;
+
+            let max = f32::max(t0, t1);
+            if max < 0. {
+                None
+            }
+            else {
+                Some(Positive::new(max).expect("Positive"))
+            }
+        }
+    }
+
+    fn get_snapshot_portal_traversal(&self, snap: &sg::Snapshot, half_portal_idx: usize) -> Option<PortalTraversalCheckResult> {
+        let snap_shape = self.snapshot_collision_shape(snap);
+        let portal = self.half_portals[half_portal_idx];
+        let portal_shape = parry2d::shape::Polyline::new(vec![
+            na::point![0., -portal.height / 2.],
+            na::point![0., portal.height / 2.],
+        ], None);
+        let portal_isometry = affine_to_isometry(portal.transform);
+
+        let contact = parry2d::query::contact(
+            &affine_to_isometry(self.snapshot_affine(snap)), &snap_shape,
+            &portal_isometry, &portal_shape,
+            0.
+        ).expect("supported");
+
+        let result = contact
+            .map(|contact| {
+                parry2d::query::ShapeCastHit {
+                    time_of_impact: 0.,
+                    witness1: contact.point1,
+                    witness2: contact.point2,
+                    normal1: contact.normal1,
+                    normal2: contact.normal2,
+                    // unused anyway
+                    status: parry2d::query::ShapeCastStatus::Converged,
+                }
+            })
+            .or_else(|| {
+                parry2d::query::cast_shapes_nonlinear(
+                    &parry2d::query::NonlinearRigidMotion::constant_position(portal_isometry),
+                    &portal_shape,
+                    &self.snapshot_motion(snap), &snap_shape,
+
+                    // TODO: Use real number \o/
+                    0., 15., true
+                ).expect("supported")
+            })?;
+
+        let impact_dt = dbg!(result.time_of_impact);
+        let impact_time = impact_dt + snap.time;
+        let end_dt = self.get_snapshot_portal_traversal_end_dt(snap, half_portal_idx)
+            .expect("Collision exists");
+        let end_t = snap.time + end_dt.get();
+        let direction = if result.normal1.x < 0. { PortalDirection::Front } else { PortalDirection::Back };
+
+        Some(PortalTraversalCheckResult {
+            direction,
+            duration: impact_time..end_t,
+        })
+    }
+
+    fn apply_collision_1(&mut self, info: SimCollisionInfo<1>) {
+        let invforcetrans = info.snaps[0].force_transform.inverse();
+        let new_partial = sg::PartialSnapshot {
+            timeline_id: info.snaps[0].timeline_id,
+            delta_age: info.snaps[0].extrapolated_by + info.col.impact_delta_time,
+            linear_impulse: invforcetrans.transform_vector2(info.col.states[0].linear_impulse) ,
+            angular_impulse: info.col.states[0].angular_impulse,
+        };
+
+        let n = self.snapshots.insert(new_partial, info.snaps[0].handle);
+        println!("Created handle {n}");
+    }
+
+    fn apply_collision_2(&mut self, info: SimCollisionInfo<2>) {
+        for i in 0..2 {
+            let invforcetrans = info.snaps[i].force_transform.inverse();
+            let new_partial = sg::PartialSnapshot {
+                timeline_id: info.snaps[i].timeline_id,
+                delta_age: info.snaps[i].extrapolated_by + info.col.impact_delta_time,
+                linear_impulse: invforcetrans.transform_vector2(info.col.states[i].linear_impulse) ,
+                angular_impulse: info.col.states[i].angular_impulse,
+            };
+
+            let n = self.snapshots.insert(new_partial, info.snaps[i].handle);
+            println!("Created handle {n}");
+        }
+    }
+
+    fn apply_collision(&mut self, info: SimGenericCollisionInfo) {
+        match info {
+            SimGenericCollisionInfo::One(info) => {
+                self.apply_collision_1(info);
+            },
+            SimGenericCollisionInfo::Two(info) => {
+                self.apply_collision_2(info);
+            },
+        }
     }
 
     pub fn step(&mut self) -> ControlFlow<(), ()> {
