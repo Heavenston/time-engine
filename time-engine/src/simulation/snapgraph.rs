@@ -127,8 +127,9 @@ pub struct RootSnapshot {
 pub struct PartialPortalTraversal {
     pub half_portal_idx: usize,
     pub in_direction: PortalDirection,
-    pub sub_id_in: usize,
-    pub sub_id_out: usize,
+    // TODO
+    // pub sub_id_in: usize,
+    // pub sub_id_out: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -395,6 +396,7 @@ impl SnapshotGraph {
             children: vec![],
         }.into());
         let handle = self.inner_handle(self.nodes.len()-1);
+        self.leafs.push(handle.into());
 
         self.nodes[previous.idx].children_mut().push(handle);
 

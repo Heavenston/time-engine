@@ -211,9 +211,15 @@ impl AppState {
     }
     
     fn full_simulate(&mut self) {
-        while !self.simulator_finished {
+        let prev_full_simulate_option = self.auto_full_simulate;
+
+        // set to true to detect when the simulation crashes
+        self.auto_full_simulate = true;
+        while !self.simulator_finished && self.auto_full_simulate {
             self.simulation_step();
         }
+
+        self.auto_full_simulate = prev_full_simulate_option;
     }
     
     fn change_scene(&mut self, new_scene: Arc<dyn Scene>) {
