@@ -68,7 +68,7 @@ impl Scene for CollisionBehindPortal {
             ),
             out_transform: Affine2::from_angle_translation(
                 std::f32::consts::FRAC_PI_2,
-                Vec2::new(25., 48.),
+                Vec2::new(25., 45.),
             ),
             time_offset: 0.,
         });
