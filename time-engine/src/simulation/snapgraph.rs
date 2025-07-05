@@ -5,13 +5,41 @@ use std::{ fmt::Display, ops::{ Deref, DerefMut, Index }, range::Range, sync::at
 use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
 
-#[derive(Default, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortalTraversalDirection {
+    /// Special case for vecolity = 0
+    NotMoving,
+    GoingIn,
+    GoingOut,
+}
+
+impl PortalTraversalDirection {
+    pub fn is_going_in(self) -> bool {
+        matches!(self, Self::GoingIn)
+    }
+
+    pub fn is_going_out(self) -> bool {
+        matches!(self, Self::GoingOut)
+    }
+
+    pub fn swap(self) -> Self {
+        match self {
+            Self::NotMoving => Self::NotMoving,
+            Self::GoingIn => Self::GoingOut,
+            Self::GoingOut => Self::GoingIn,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PortalTraversal {
     // TODO: Reduce size to maybe u8 or u16
     pub half_portal_idx: usize,
     pub direction: PortalDirection,
-    pub range: Range<f32>,
-    pub is_swaped: bool,
+    pub traversal_direction: PortalTraversalDirection,
+    // TODO: Convert to RangeTo<f32> as the start should always be the start of
+    //       the snapshot
+    pub time_range: Range<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,11 +93,6 @@ impl Snapshot {
         // FIXME: Correct?
         self.rot += transform.to_scale_angle_translation().1;
         self.force_transform *= transform;
-    }
-
-    pub fn time_offseted(mut self, dt: f32) -> Self {
-        self.time += dt;
-        self
     }
 
     pub fn integrate_by(&mut self, delta: Positive) {
@@ -126,10 +149,29 @@ pub struct RootSnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PartialPortalTraversal {
     pub half_portal_idx: usize,
-    pub in_direction: PortalDirection,
-    // TODO
-    // pub sub_id_in: usize,
-    // pub sub_id_out: usize,
+    pub direction: PortalDirection,
+    /// In how much time does this portal traversal ends with the current
+    /// velocity
+    pub delta_end: Positive,
+    /// ... see usage \o/
+    pub sub_id_in: usize,
+    /// ... see usage \o/
+    pub sub_id_out: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PartialSnapshotDelta {
+    Impulse {
+        /// Is in *local* space
+        linear: Vec2,
+        /// Is in *local* space... but because there is never any mirroring
+        /// this is the same as global space
+        angular: f32,
+    },
+    PortalTraversal {
+        /// After the impulse is applied this is the list of current portal traversals
+        traversal: PartialPortalTraversal,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -137,13 +179,7 @@ pub struct PartialSnapshot {
     /// How much time *after* the previous snapshot does this one
     /// happens in local time
     pub delta_age: Positive,
-    /// Is in *local* space
-    pub linear_impulse: Vec2,
-    /// Is in *local* space... but because there is never any mirroring
-    /// this is the same as global space
-    pub angular_impulse: f32,
-    /// After the impulse is applied this is the list of current portal traversals
-    pub portal_traversal: AutoSmallVec<PartialPortalTraversal>,
+    pub delta: PartialSnapshotDelta,
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -154,14 +190,12 @@ pub struct NodeHandle {
 }
 
 impl PartialOrd for NodeHandle {
-    #[cfg(debug_assertions)]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        (self.graph_id != other.graph_id).then_some(())
-            .and_then(|()| self.idx.partial_cmp(&other.idx))
-    }
+        #[cfg(debug_assertions)]
+        if self.graph_id != other.graph_id {
+            return None;
+        }
 
-    #[cfg(not(debug_assertions))]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         self.idx.partial_cmp(&other.idx)
     }
 }

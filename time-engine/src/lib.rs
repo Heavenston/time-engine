@@ -73,6 +73,37 @@ impl PortalDirection {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortalVelocityDirection {
+    NotMoving,
+    IntoFront,
+    IntoBack,
+}
+
+impl PortalVelocityDirection {
+    pub fn is_not_moving(self) -> bool {
+        matches!(self, Self::NotMoving)
+    }
+
+    pub fn is_into_front(self) -> bool {
+        matches!(self, Self::IntoFront)
+    }
+
+    pub fn is_into_back(self) -> bool {
+        matches!(self, Self::IntoBack)
+    }
+}
+
+impl PartialEq<PortalDirection> for PortalVelocityDirection {
+    fn eq(&self, other: &PortalDirection) -> bool {
+        match self {
+            PortalVelocityDirection::NotMoving => false,
+            PortalVelocityDirection::IntoFront => other.is_front(),
+            PortalVelocityDirection::IntoBack => other.is_back(),
+        }
+    }
+}
+
 pub(crate) fn default<T: Default>() -> T {
     T::default()
 }
