@@ -54,6 +54,7 @@ pub struct Snapshot {
     pub extrapolated_by: Positive,
 
     pub timeline_id: TimelineId,
+    pub timestamp: Timestamp,
     pub age: Positive,
     pub time: f32,
 
@@ -127,6 +128,14 @@ impl Snapshot {
             ..*self
         })
     }
+
+    pub fn extrapolate_to_timestamp(&self, to: f32, timestamp: Timestamp) -> Option<Self> {
+        #[expect(deprecated)]
+        self.extrapolate_to(to).map(|this| Self {
+            timestamp,
+            ..this
+        })
+    }
 }
 
 impl Display for Snapshot {
@@ -179,6 +188,7 @@ pub struct PartialSnapshot {
     /// How much time *after* the previous snapshot does this one
     /// happens in local time
     pub delta_age: Positive,
+    pub new_timestamp: Timestamp,
     pub delta: PartialSnapshotDelta,
 }
 

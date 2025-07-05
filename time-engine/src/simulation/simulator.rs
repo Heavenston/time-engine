@@ -182,7 +182,7 @@ pub struct Simulator {
     starts: Ro<Box<[sg::RootNodeHandle]>>,
     half_portals: Vec<HalfPortal>,
 
-    timeline_presents: HashMap<TimelineId, f32>,
+    timeline_timestamps: HashMap<TimelineId, TimestampList>,
 
     /// Cannot be changed without recomputing everything, i think
     max_time: Ro<f32>,
@@ -223,8 +223,8 @@ impl Simulator {
             });
         }
 
-        let timeline_presents = [
-            (multiverse.root(), 0.)
+        let timeline_timestamps = [
+            (multiverse.root(), TimestampList::new())
         ].into();
 
         Self {
@@ -236,7 +236,7 @@ impl Simulator {
             starts: starts.clone().into_boxed_slice().into(),
             half_portals,
 
-            timeline_presents,
+            timeline_timestamps,
 
             max_time: Ro::new(max_time),
         }
@@ -306,6 +306,7 @@ impl Simulator {
             extrapolated_by: Positive::new(0.).expect("Positive"),
 
             timeline_id: self.multiverse.root(),
+            timestamp: self.timeline_timestamps[&self.multiverse.root()].first_timestamp(),
             // All objects starts with age 0 at time 0
             age: Positive::new(0.).expect("Positive"),
             time: 0.,
@@ -346,6 +347,8 @@ impl Simulator {
         new_snapshot.portal_traversals.retain(|traversal| {
             !traversal.time_range.is_finished(new_snapshot.time)
         });
+
+        new_snapshot.timestamp = partial.new_timestamp;
         
         // Portal traversals only affect a single sub_id
         // whereas impulses affect all sub_id s
@@ -472,7 +475,15 @@ impl Simulator {
             .max()
     }
 
+    pub fn get_node_next_timestamp(&self, node: &sg::Node, timeline_id: TimelineId) -> Option<Timestamp> {
+        node.children().iter().copied()
+            .filter(|&child_handle| self.multiverse.is_parent(self.snapshots[child_handle].timeline_id(), timeline_id))
+            .map(|child_handle| self.snapshots[child_handle].partial.new_timestamp)
+            .at_most_one().expect("Cannot be two children for the same timeline id")
+    }
+
     /// Uses this node's children to find the duration for which it is valid
+    #[deprecated]
     pub fn time_filtered_integrate(&self, handle: sg::NodeHandle, query_time: f32) -> impl Iterator<Item = sg::Snapshot> {
         let max_dt = self.get_node_max_dt(&self.snapshots[handle], None);
         let snaps = self.integrate(handle);
@@ -481,6 +492,17 @@ impl Simulator {
                 let snap = &snaps[i];
                 TimeRange::new(Some(snap.time), max_dt.map(|dt| snap.time + dt.get()))
                     .contains(&query_time)
+                    .then(|| snap.clone())
+            })
+    }
+
+    pub fn timestamp_filtered_integrate(&self, handle: sg::NodeHandle, timeline_id: TimelineId, timestamp: Timestamp) -> impl Iterator<Item = sg::Snapshot> {
+        let next_ts = self.get_node_next_timestamp(&self.snapshots[handle], timeline_id);
+        let snaps = self.integrate(handle);
+        (0..snaps.len()).into_iter()
+            .filter_map(move |i| {
+                let snap = &snaps[i];
+                (snap.timestamp <= timestamp && next_ts.is_none_or(|next_ts| timestamp < next_ts))
                     .then(|| snap.clone())
             })
     }
@@ -766,8 +788,24 @@ impl Simulator {
     }
 
     fn apply_collision<const N: usize>(&mut self, event: CollisionSimulationEvent<N>) {
+        assert!(event.snaps.iter().map(|snap| snap.handle).all_unique(), "Self-collision of a single handle is not yet implemented");
+
         // TEMP: Maybe possible with time travel? (i think not)
         debug_assert!(event.snaps.iter().map(|snap| (snap.object_id, snap.sub_id)).all_unique());
+
+        let child_timeline = event.child_timeline(&self.multiverse);
+        let parent_timeline = event.parent_timeline(&self.multiverse);
+
+        let new_timestamp = if child_timeline != parent_timeline {
+            todo!()
+        }
+        else {
+            self.timeline_timestamps.get_mut(&parent_timeline)
+                .expect("Exists")
+                .push(TimestampDelta {
+                    delta_t: event.col.impact_delta_time,
+                })
+        };
 
         for i in 0..N {
             // TEMP: This can only happen whith timeline branches
@@ -776,6 +814,7 @@ impl Simulator {
             let invforcetrans = event.snaps[i].force_transform.inverse();
             let new_partial = sg::PartialSnapshot {
                 delta_age: event.snaps[i].extrapolated_by + event.col.impact_delta_time,
+                new_timestamp,
                 delta: sg::PartialSnapshotDelta::Impulse {
                     linear: invforcetrans.transform_vector2(event.col.states[i].linear_impulse) ,
                     angular: event.col.states[i].angular_impulse,
@@ -803,9 +842,16 @@ impl Simulator {
         } else {
             (gened_sub_id, snap_sub_id)
         };
-        
+
+        let new_timestamp = self.timeline_timestamps.get_mut(&event.snap.timeline_id)
+            .expect("Exists")
+            .push(TimestampDelta {
+                delta_t: event.data.delta_range.start,
+            });
+
         let new_partial = sg::PartialSnapshot {
             delta_age: event.snap.extrapolated_by + event.data.delta_range.start,
+            new_timestamp,
             delta: sg::PartialSnapshotDelta::PortalTraversal {
                 traversal: sg::PartialPortalTraversal {
                     half_portal_idx: event.data.half_portal_idx,
@@ -839,12 +885,13 @@ impl Simulator {
     pub fn step(&mut self) -> ControlFlow<(), ()> {
         const MAX_DT: f32 = 1.;
 
-        // make a non-mutable reference so a `Copy` reference for move closures
+        // make a non-mutable reference, so a `Copy` reference, for move closures
         let this = &*self;
 
         println!();
 
-        if self.timeline_presents.values().copied()
+        if self.timeline_timestamps.iter()
+            .flat_map(|(_, list)| list.iter().map(|(_, data)| data.running_sum.get()))
             .reduce(f32::min)
             .unwrap_or(*self.max_time) >= *self.max_time {
             println!("FINISHED max time is {}", *self.max_time);
@@ -856,7 +903,13 @@ impl Simulator {
             .flat_map(|snaps| {
                 (0..snaps.len()).into_iter()
                 .filter_map(move |i| {
-                    snaps[i].extrapolate_to(this.timeline_presents[&snaps[i].timeline_id])
+                    let tss = &this.timeline_timestamps[&snaps[i].timeline_id];
+                    let last_ts = tss.last_timestamp();
+                    let last_t = tss[last_ts].running_sum.get();
+                    if last_t >= *this.max_time {
+                        return None;
+                    }
+                    snaps[i].extrapolate_to_timestamp(last_t, last_ts)
                 })
             })
             .collect_vec()
@@ -873,18 +926,20 @@ impl Simulator {
             .map(|snap| snap.timeline_id)
             .unique()
             .map(|tid| {
-                let t = this.timeline_presents[&tid];
+                let tss = &self.timeline_timestamps[&tid];
+                let last_ts = tss.last_timestamp();
+
                 let world = this.timeline_query(tid)
                     .flat_map(move |handle_| 
-                        this.time_filtered_integrate(handle_, t)
-                        .filter_map(move |snap| snap.extrapolate_to(t))
+                        this.timestamp_filtered_integrate(handle_, tid, last_ts)
+                        .filter_map(move |snap| snap.extrapolate_to_timestamp(tss[last_ts].running_sum.get(), last_ts))
                     )
                     .collect::<Vec<_>>();
                 (tid, world)
             })
             .collect();
 
-        println!("{}", worlds.iter().map(|(k, v)| (k, v.iter().join(", "))).map(|(k, v)| format!("tid {k} ({}s) -> {v}", self.timeline_presents[k])).join("\n"));
+        println!("{}", worlds.iter().map(|(k, v)| (k, v.iter().join(", "))).map(|(k, v)| format!("tid {k} ({}s) -> {v}", self.timeline_timestamps[k].last().running_sum)).join("\n"));
 
         let groups = leafs.iter()
             .flat_map(|snap| {
@@ -907,6 +962,7 @@ impl Simulator {
                 .cartesian_product(0..self.half_portals.len())
                 .filter_map(|(snap, half_portal_idx)| {
                     let end = f32::min(*self.max_time - snap.time, MAX_DT);
+                    debug_assert!(end >= 0.);
                     self.cast_portal_traversal(snap, half_portal_idx, 0. .. end)
                     .map(|data| PortalTraversalSimulationEvent {
                         data,
@@ -920,6 +976,7 @@ impl Simulator {
                 leafs.iter()
                 .filter_map(|snap| {
                     let end = f32::min(*self.max_time - snap.time, MAX_DT);
+                    debug_assert!(end >= 0.);
                     self.cast_ball_wall_collision(snap, 0. .. end)
                     .map(|col| CollisionSimulationEvent {
                         col,
@@ -934,6 +991,7 @@ impl Simulator {
                 .filter_map(|(s1, s2)| {
                     debug_assert!((s1.time - s2.time).abs() <= DEFAULT_EPSILON, "{} != {}", s1.time, s2.time);
                     let end = f32::min(*self.max_time - s1.time, MAX_DT);
+                    debug_assert!(end >= 0.);
                     self.cast_ball_ball_collision(s1, s2, 0. .. end)
                     .map(|col| CollisionSimulationEvent {
                         col,
@@ -951,19 +1009,16 @@ impl Simulator {
         else {
             println!("NO COLLISION FOUND");
             for tid in leafs.iter().map(|snap| snap.timeline_id).unique() {
-                let present = self.timeline_presents.get_mut(&tid).expect("present");
-                *present += MAX_DT;
+                let tss = self.timeline_timestamps.get_mut(&tid).expect("exists");
+                tss.push(TimestampDelta { delta_t: Positive::new(MAX_DT).expect("positive") });
             }
             return ControlFlow::Continue(())
         };
-        let tid = collision.parent_timeline(&self.multiverse);
-
         println!("Selected collision: {}", collision.simple_debug());
 
         assert_eq!(collision.parent_timeline(&self.multiverse), collision.child_timeline(&self.multiverse), "Unsupported yet");
-        assert!(self.timeline_presents[&tid] <= collision.impact_time(), "assert({} <= {}) ({collision:#?})", self.timeline_presents[&tid], collision.impact_time());
+        // assert!(self.timeline_presents[&tid] <= collision.impact_time(), "assert({} <= {}) ({collision:#?})", self.timeline_presents[&tid], collision.impact_time());
 
-        self.timeline_presents.insert(tid, collision.impact_time());
         self.apply_simulation_event(collision);
         
         ControlFlow::Continue(())
