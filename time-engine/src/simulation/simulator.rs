@@ -353,17 +353,27 @@ impl Simulator {
             snapgraph::PartialSnapshotDelta::Impulse { linear, angular } => {
                 new_snapshot.linvel += snapshot.force_transform.transform_vector2(*linear);
                 new_snapshot.angvel += angular;
+                let not_moving = new_snapshot.linvel.element_sum().abs() <= DEFAULT_EPSILON;
 
                 // Re-compute the end of each traversals as change in velocity
                 // means changes to when traversal ends
                 for i in 0..new_snapshot.portal_traversals.len() {
                     let traversal = &new_snapshot.portal_traversals[i];
-                    let Some((new_delta_start, new_delta_end, _)) = self.cast_portal_traversal_start_end(&new_snapshot, traversal.half_portal_idx)
+                    let Some((new_delta_start, new_delta_end, traversal_direction)) = self.cast_portal_traversal_start_end(&new_snapshot, traversal.half_portal_idx)
                     else { unreachable!("Should have been known/'detected' by the time_range before ?") };
 
-                    new_snapshot.portal_traversals[i].time_range =
-                        new_snapshot.time + new_delta_start..new_snapshot.time + new_delta_end
-                    ;
+                    let traversal = &mut new_snapshot.portal_traversals[i];
+                    traversal.time_range = new_snapshot.time + new_delta_start..new_snapshot.time + new_delta_end;
+
+                    if not_moving {
+                        traversal.traversal_direction = sg::PortalTraversalDirection::NotMoving;
+                    }
+                    else if traversal_direction == traversal.direction {
+                        traversal.traversal_direction = sg::PortalTraversalDirection::GoingIn;
+                    }
+                    else {
+                        traversal.traversal_direction = sg::PortalTraversalDirection::GoingOut;
+                    }
                 }
 
                 None
@@ -462,6 +472,7 @@ impl Simulator {
             .max()
     }
 
+    /// Uses this node's children to find the duration for which it is valid
     pub fn time_filtered_integrate(&self, handle: sg::NodeHandle, query_time: f32) -> impl Iterator<Item = sg::Snapshot> {
         let max_dt = self.get_node_max_dt(&self.snapshots[handle], None);
         let snaps = self.integrate(handle);
@@ -755,6 +766,9 @@ impl Simulator {
     }
 
     fn apply_collision<const N: usize>(&mut self, event: CollisionSimulationEvent<N>) {
+        // TEMP: Maybe possible with time travel? (i think not)
+        debug_assert!(event.snaps.iter().map(|snap| (snap.object_id, snap.sub_id)).all_unique());
+
         for i in 0..N {
             // TEMP: This can only happen whith timeline branches
             debug_assert!(self.snapshots[event.snaps[i].handle].children().is_empty());
@@ -768,7 +782,7 @@ impl Simulator {
                 },
             };
 
-            println!("[{}/{N}] {new_partial:#?}", i + 1);
+            println!("[{}/{N}] {new_partial:?}", i + 1);
             let n = self.snapshots.insert(new_partial, event.snaps[i].handle);
             println!("Created handle {n}");
         }
@@ -803,7 +817,7 @@ impl Simulator {
                 },
             }
         };
-        println!("[1/1] {new_partial:#?}");
+        println!("[1/1] {new_partial:?}");
         let n = self.snapshots.insert(new_partial, event.snap.handle);
         println!("Created handle {n}");
     }
@@ -829,7 +843,6 @@ impl Simulator {
         let this = &*self;
 
         println!();
-        dbg!(&self.timeline_presents);
 
         if self.timeline_presents.values().copied()
             .reduce(f32::min)
@@ -870,6 +883,8 @@ impl Simulator {
                 (tid, world)
             })
             .collect();
+
+        println!("{}", worlds.iter().map(|(k, v)| (k, v.iter().join(", "))).map(|(k, v)| format!("tid {k} ({}s) -> {v}", self.timeline_presents[k])).join("\n"));
 
         let groups = leafs.iter()
             .flat_map(|snap| {

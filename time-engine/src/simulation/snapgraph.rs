@@ -131,7 +131,7 @@ impl Snapshot {
 
 impl Display for Snapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "obj{}({}.{}+{}s)", self.object_id, self.handle.idx, self.sub_id, self.extrapolated_by)
+        write!(f, "obj{}({}.{} {}+{}s)", self.object_id, self.handle.idx, self.sub_id, self.time, self.extrapolated_by)
     }
 }
 
