@@ -29,6 +29,17 @@ impl PortalTraversalDirection {
             Self::GoingOut => Self::GoingIn,
         }
     }
+
+    pub fn from_velocity_direction(
+        velocity_direction: PortalVelocityDirection,
+        direction: PortalDirection,
+    ) -> Self {
+        match (velocity_direction, direction) {
+            (PortalVelocityDirection::NotMoving, _) => Self::NotMoving,
+            (a, b) if a == b => Self::GoingIn,
+            _ => Self::GoingOut,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -83,10 +94,10 @@ impl Snapshot {
         }
     }
 
-    pub fn apply_force_transform(&mut self, transform: Affine2) {
+    pub fn apply_portal_transormation(&mut self, transform: Affine2) {
         self.linvel = transform.transform_vector2(self.linvel);
         self.pos = transform.transform_point2(self.pos);
-        // FIXME: Correct?
+        // FIXME: Correct?, (too) slow?
         self.rot += transform.to_scale_angle_translation().1;
         self.force_transform *= transform;
     }
@@ -153,10 +164,8 @@ pub struct PartialPortalTraversal {
     /// In how much time does this portal traversal ends with the current
     /// velocity
     pub delta_end: Positive,
-    /// ... see usage \o/
-    pub sub_id_in: usize,
-    /// ... see usage \o/
-    pub sub_id_out: usize,
+    pub sub_id: usize,
+    pub traversal_direction: PortalTraversalDirection,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -171,6 +180,9 @@ pub enum PartialSnapshotDelta {
     PortalTraversal {
         /// After the impulse is applied this is the list of current portal traversals
         traversal: PartialPortalTraversal,
+    },
+    Ghostification {
+        sub_id: usize,
     },
 }
 

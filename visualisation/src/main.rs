@@ -423,11 +423,12 @@ impl AppState {
                             "{snap} - {}",
                             snap.portal_traversals.iter()
                                 .map(|traversal| format!(
-                                    "{} {:?} {:?} {:?}",
+                                    "{} {:?} {:?} {:?} {:?}",
                                     traversal.half_portal_idx,
                                     traversal.direction,
                                     traversal.time_range,
-                                    traversal.traversal_direction
+                                    traversal.direction,
+                                    traversal.traversal_direction,
                                 ))
                                 .join(" - ")
                         )}).join("\n");

@@ -116,7 +116,7 @@ impl Scene for SinglePortalScene {
         });
         sim.push_ball(te::Ball {
             initial_pos: Vec2::new(if self.inverted { 24.5 } else { 25.5 }, 70.), 
-            initial_velocity: Vec2::new(0., 0.),
+            initial_velocity: Vec2::new(-0.01, 0.),
             radius: 3.,
             ..Default::default()
         });

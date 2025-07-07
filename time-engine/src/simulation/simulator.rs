@@ -87,75 +87,77 @@ struct PortalTraversalSimulationEvent<'a> {
 }
 
 #[derive(Debug, Clone)]
+struct GhostificationData {
+    delta_time: Positive,
+    time: f32,
+}
+
+#[derive(Debug, Clone)]
+struct GhostificationSimulationEvent<'a> {
+    data: GhostificationData,
+    snap: &'a sg::Snapshot,
+}
+
+#[derive(Debug, Clone)]
 enum GenericSimulationEventInfo<'a> {
     OneCollision(CollisionSimulationEvent<'a, 1>),
     TwoCollision(CollisionSimulationEvent<'a, 2>),
     PortalTraversal(PortalTraversalSimulationEvent<'a>),
+    Ghostification(GhostificationSimulationEvent<'a>),
 }
 
 impl<'a> GenericSimulationEventInfo<'a> {
-    fn impact_time(&self) -> f32 {
+    fn impact_delta_time(&self) -> Positive {
         match self {
-            Self::OneCollision(i) => i.col.impact_time,
-            Self::TwoCollision(i) => i.col.impact_time,
-            Self::PortalTraversal(i) => i.data.range.start,
+            Self::OneCollision(e) => e.col.impact_delta_time,
+            Self::TwoCollision(e) => e.col.impact_delta_time,
+            Self::PortalTraversal(e) => e.data.delta_range.start,
+            Self::Ghostification(e) => e.data.delta_time,
         }
     }
 
-    fn impact_delta_time(&self) -> Positive {
+    fn impact_time(&self) -> f32 {
         match self {
-            Self::OneCollision(i) => i.col.impact_delta_time,
-            Self::TwoCollision(i) => i.col.impact_delta_time,
-            Self::PortalTraversal(i) => i.data.delta_range.start,
+            Self::OneCollision(e) => e.col.impact_time,
+            Self::TwoCollision(e) => e.col.impact_time,
+            Self::PortalTraversal(e) => e.data.range.start,
+            Self::Ghostification(e) => e.data.time,
         }
     }
 
     fn simple_debug(&self) -> String {
         match self {
-            GenericSimulationEventInfo::OneCollision(info) => {
-                format!("one({}, dt {}s, {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0])
+            Self::OneCollision(e) => {
+                format!("one({}, dt {}s, {})", e.col.debug_reason, e.col.impact_delta_time, e.snaps[0])
             },
-            GenericSimulationEventInfo::TwoCollision(info) => {
-                format!("two({}, dt {}s, {} and {})", info.col.debug_reason, info.col.impact_delta_time, info.snaps[0], info.snaps[1])
+            Self::TwoCollision(e) => {
+                format!("two({}, dt {}s, {} and {})", e.col.debug_reason, e.col.impact_delta_time, e.snaps[0], e.snaps[1])
             },
-            Self::PortalTraversal(info) => {
-                format!("portal_traversal(range {:?}, {} on portal {})", info.data.delta_range, info.snap, info.data.half_portal_idx)
+            Self::PortalTraversal(e) => {
+                format!("portal_traversal(range {:?}, {} on portal {})", e.data.delta_range, e.snap, e.data.half_portal_idx)
+            },
+            Self::Ghostification(e) => {
+                format!("ghostification({} after {}s)", e.snap, e.data.delta_time)
             },
         }
     }
 
     fn child_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
         match self {
-            Self::OneCollision(sim) => sim.child_timeline(multiverse),
-            Self::TwoCollision(sim) => sim.child_timeline(multiverse),
-            Self::PortalTraversal(i) => i.snap.timeline_id,
+            Self::OneCollision(event) => event.child_timeline(multiverse),
+            Self::TwoCollision(event) => event.child_timeline(multiverse),
+            Self::PortalTraversal(event) => event.snap.timeline_id,
+            Self::Ghostification(event) => event.snap.timeline_id,
         }
     }
 
     fn parent_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
         match self {
-            Self::OneCollision(sim) => sim.parent_timeline(multiverse),
-            Self::TwoCollision(sim) => sim.parent_timeline(multiverse),
-            Self::PortalTraversal(i) => i.snap.timeline_id,
+            Self::OneCollision(event) => event.parent_timeline(multiverse),
+            Self::TwoCollision(event) => event.parent_timeline(multiverse),
+            Self::PortalTraversal(event) => event.snap.timeline_id,
+            Self::Ghostification(event) => event.snap.timeline_id,
         }
-    }
-}
-
-impl<'a> From<CollisionSimulationEvent<'a, 1>> for GenericSimulationEventInfo<'a> {
-    fn from(value: CollisionSimulationEvent<'a, 1>) -> Self {
-        Self::OneCollision(value)
-    }
-}
-
-impl<'a> From<CollisionSimulationEvent<'a, 2>> for GenericSimulationEventInfo<'a> {
-    fn from(value: CollisionSimulationEvent<'a, 2>) -> Self {
-        Self::TwoCollision(value)
-    }
-}
-
-impl<'a> From<PortalTraversalSimulationEvent<'a>> for GenericSimulationEventInfo<'a> {
-    fn from(value: PortalTraversalSimulationEvent<'a>) -> Self {
-        Self::PortalTraversal(value)
     }
 }
 
@@ -327,101 +329,70 @@ impl Simulator {
         &self,
         handle: sg::NodeHandle,
         snapshot: &sg::Snapshot,
-        partial: &sg::PartialSnapshot
+        partial: &sg::PartialSnapshot,
+        new_sub_id: &mut impl FnMut() -> usize,
     ) -> SmallVec<sg::Snapshot, 2> {
         let mut new_snapshot = snapshot.clone();
         new_snapshot.integrate_by(partial.delta_age);
         new_snapshot.handle = handle;
 
-        // If a 'going out' is finished we are fully behind
-        // a portal so the snapshot is now useless
-        let is_ghost = new_snapshot.portal_traversals.iter()
-            .filter(|traversal| traversal.traversal_direction.is_going_out())
-            .any(|traversal| traversal.time_range.is_finished(new_snapshot.time));
-        if is_ghost {
-            return smallvec![];
-        }
-
         new_snapshot.portal_traversals.retain(|traversal| {
             !traversal.time_range.is_finished(new_snapshot.time)
         });
-
         new_snapshot.timestamp = partial.new_timestamp;
         
         // Portal traversals only affect a single sub_id
         // whereas impulses affect all sub_id s
         let ghost_snapshot: Option<sg::Snapshot> = match &partial.delta {
-            snapgraph::PartialSnapshotDelta::Impulse { linear, angular } => {
+            sg::PartialSnapshotDelta::Impulse { linear, angular } => {
                 new_snapshot.linvel += snapshot.force_transform.transform_vector2(*linear);
                 new_snapshot.angvel += angular;
-                let not_moving = new_snapshot.linvel.element_sum().abs() <= DEFAULT_EPSILON;
 
                 // Re-compute the end of each traversals as change in velocity
                 // means changes to when traversal ends
                 for i in 0..new_snapshot.portal_traversals.len() {
                     let traversal = &new_snapshot.portal_traversals[i];
-                    let Some((_, new_delta_end, traversal_direction)) = self.cast_portal_traversal_start_end(&new_snapshot, traversal.half_portal_idx)
+                    let Some((_, new_delta_end, _, velocity_direction)) = self.cast_portal_traversal_start_end(&new_snapshot, traversal.half_portal_idx)
                     else { unreachable!("Should have been known/'detected' by the time_range before ?") };
 
                     let traversal = &mut new_snapshot.portal_traversals[i];
                     traversal.time_range = ..new_snapshot.time + new_delta_end;
 
-                    if not_moving {
-                        traversal.traversal_direction = sg::PortalTraversalDirection::NotMoving;
-                    }
-                    else if traversal_direction == traversal.direction {
-                        traversal.traversal_direction = sg::PortalTraversalDirection::GoingIn;
-                    }
-                    else {
-                        traversal.traversal_direction = sg::PortalTraversalDirection::GoingOut;
-                    }
+                    traversal.traversal_direction = sg::PortalTraversalDirection::
+                        from_velocity_direction(velocity_direction, traversal.direction);
                 }
 
                 None
             },
-            snapgraph::PartialSnapshotDelta::PortalTraversal { traversal }
-                if traversal.sub_id_in == snapshot.sub_id ||
-                    traversal.sub_id_out == snapshot.sub_id
-            => {
+            sg::PartialSnapshotDelta::PortalTraversal { traversal } =>
+            if traversal.sub_id == snapshot.sub_id {
                 let mut ghost_snapshot = new_snapshot.clone();
                 let half_portal = &self.half_portals[traversal.half_portal_idx];
                 let out_half_portal = &self.half_portals[half_portal.linked_to];
-
-                debug_assert_ne!(traversal.sub_id_in, traversal.sub_id_out);
-                let (traversal_direction, other_id) = if traversal.sub_id_in == snapshot.sub_id {
-                    (sg::PortalTraversalDirection::GoingIn, traversal.sub_id_out)
-                } else {
-                    (sg::PortalTraversalDirection::GoingOut, traversal.sub_id_in)
-                };
-
-                let traversal_direction = if traversal.delta_end.is_infinite() {
-                    sg::PortalTraversalDirection::NotMoving
-                } else {
-                    traversal_direction
-                };
 
                 let transform = out_half_portal.transform * half_portal.transform.inverse();
                         
                 new_snapshot.portal_traversals.push(sg::PortalTraversal {
                     half_portal_idx: traversal.half_portal_idx,
                     direction: traversal.direction,
-                    traversal_direction,
+                    traversal_direction: traversal.traversal_direction,
                     time_range: ..new_snapshot.time + traversal.delta_end.get(),
                 });
 
-                ghost_snapshot.sub_id = other_id;
+                ghost_snapshot.sub_id = new_sub_id();
                 ghost_snapshot.time += half_portal.time_offset;
-                ghost_snapshot.apply_force_transform(transform);
+                ghost_snapshot.apply_portal_transormation(transform);
                 ghost_snapshot.portal_traversals.push(sg::PortalTraversal {
                     half_portal_idx: half_portal.linked_to,
                     direction: traversal.direction.swap(),
-                    traversal_direction: traversal_direction.swap(),
+                    traversal_direction: traversal.traversal_direction.swap(),
                     time_range: ..ghost_snapshot.time + traversal.delta_end.get(),
                 });
 
                 Some(ghost_snapshot)
-            },
-            _ => None,
+            } else { None },
+            sg::PartialSnapshotDelta::Ghostification { sub_id } =>
+            if snapshot.sub_id == *sub_id { return smallvec![]; } else { None },
         };
 
         if let Some(additional) = ghost_snapshot {
@@ -437,6 +408,7 @@ impl Simulator {
             return snap;
         }
 
+
         let out_snapshots = match &self.snapshots[handle] {
             sg::Node::Root(root_node) => {
                 let root_snap = &root_node.snapshot;
@@ -446,11 +418,19 @@ impl Simulator {
                 let snapshots = self.integrate(inner_node.previous);
                 let partial = &inner_node.partial;
 
+                let mut new_sub_id = {
+                    let mut counter = snapshots.iter().map(|snap| snap.sub_id)
+                        .max().expect("If new_sub_id is called this cannot be empty");
+                    move || {
+                        counter += 1;
+                        counter
+                    }
+                };
                 // applies the 'partial' to all snapshots
                 snapshots.iter()
                     .inspect(|snapshot| debug_assert_eq!(snapshot.handle, inner_node.previous))
                     .inspect(|snapshot| debug_assert_eq!(snapshot.extrapolated_by.get(), 0.))
-                    .flat_map(|snapshot| self.integrate_inner_node(handle, snapshot, partial))
+                    .flat_map(|snapshot| self.integrate_inner_node(handle, snapshot, partial, &mut new_sub_id))
                     .inspect(|snapshot| debug_assert_eq!(snapshot.handle, handle))
                     .collect_vec()
             },
@@ -598,7 +578,7 @@ impl Simulator {
         &self,
         snap: &sg::Snapshot,
         half_portal_idx: usize,
-    ) -> Option<(f32, f32, PortalVelocityDirection)> {
+    ) -> Option<(f32, f32, PortalDirection, PortalVelocityDirection)> {
         let collision_shape = self.snapshot_collision_shape(snap);
         debug_assert!(collision_shape.is_convex(), "Only convex shapes are supported");
         // bounding sphere is supposed to be rotation-independant
@@ -620,11 +600,17 @@ impl Simulator {
         let v = rel_vel.x;
         let r = radius;
 
+        let direction = if rel_center.x <= 0. {
+            PortalDirection::Front
+        } else {
+            PortalDirection::Back
+        };
+
         // v ~= 0
         if v.abs() <= DEFAULT_EPSILON {
             // Touching and always touching
             if v <= r {
-                return Some((f32::NEG_INFINITY, f32::INFINITY, PortalVelocityDirection::NotMoving));
+                return Some((f32::NEG_INFINITY, f32::INFINITY, direction, PortalVelocityDirection::NotMoving));
             }
             else {
                 return None;
@@ -635,10 +621,10 @@ impl Simulator {
         let t1 = ( r - p) / v;
 
         if v < 0. {
-            Some((t1, t0, PortalVelocityDirection::IntoFront))
+            Some((t1, t0, direction, PortalVelocityDirection::IntoBack))
         }
         else /* v > 0. */ {
-            Some((t0, t1, PortalVelocityDirection::IntoBack))
+            Some((t0, t1, direction, PortalVelocityDirection::IntoFront))
         }
     }
 
@@ -658,35 +644,29 @@ impl Simulator {
 
         let half_portal = &self.half_portals[half_portal_idx];
 
-        let (t0, t1, moving_direction) = self.cast_portal_traversal_start_end(snap, half_portal_idx)?;
+        let (t0, t1, direction, velocity_direction) = self.cast_portal_traversal_start_end(snap, half_portal_idx)?;
 
-        println!("t0, t1: {t0}..{t1}");
         let traversal_range = t0..t1;
         let TimeRange::Range(range_overlap) = TimeRange::from(dt_range) & TimeRange::from(traversal_range)
         else { unreachable!() };
-        println!("range overlap: {range_overlap:?}");
         if range_overlap.is_empty() {
             return None;
         }
 
         let h2 = half_portal.height/2.;
-        let portal_shape = parry2d::shape::Polyline::new(vec![
-            half_portal.transform.transform_point2(Vec2::new(0., -h2)).to_na(),
-            half_portal.transform.transform_point2(Vec2::new(0., h2)).to_na(),
-        ], None);
+        let portal_shape = parry2d::shape::Polyline::new(
+            vec![Vec2::new(0., -h2).to_na(), Vec2::new(0., h2).to_na()],
+            None
+        );
 
-        let collision = parry2d::query::cast_shapes_nonlinear(
+        let collision = dbg!(parry2d::query::cast_shapes_nonlinear(
+            &parry2d::query::NonlinearRigidMotion::constant_position(
+                affine_to_isometry(half_portal.transform)
+            ), &portal_shape,
             &self.snapshot_motion(snap), &collision_shape,
-            &parry2d::query::NonlinearRigidMotion::identity(), &portal_shape,
             range_overlap.start, range_overlap.end,
             true
-        ).expect("Compatible")?;
-
-        let direction = if collision.normal1.x > 0. {
-            PortalDirection::Front
-        } else {
-            PortalDirection::Back
-        };
+        ).expect("Compatible")?);
 
         // The collision is a better 'estimate' of when the traversal starsts
         let delta_range = Positive::new(collision.time_of_impact).expect("positive")..Positive::new(t1).expect("positive");
@@ -697,13 +677,7 @@ impl Simulator {
         Some(NewPortalTraversalData {
             half_portal_idx,
             direction,
-            traversal_direction: if moving_direction.is_not_moving() {
-                sg::PortalTraversalDirection::NotMoving
-            } else if moving_direction == direction {
-                sg::PortalTraversalDirection::GoingIn
-            } else {
-                sg::PortalTraversalDirection::GoingOut
-            },
+            traversal_direction: sg::PortalTraversalDirection::from_velocity_direction(velocity_direction, direction),
             delta_range,
             range,
         })
@@ -785,25 +759,27 @@ impl Simulator {
         })
     }
 
-    fn apply_collision<const N: usize>(&mut self, event: CollisionSimulationEvent<N>) {
+    fn cast_ball_ghostification(
+        &self,
+        snap: &sg::Snapshot,
+        dt_range: Range<f32>,
+    ) -> Option<GhostificationData> {
+        snap.portal_traversals.iter()
+            .filter(|traversal| traversal.traversal_direction.is_going_in())
+            .map(|traversal| traversal.time_range.end)
+            .filter(|&time| dt_range.contains(&(time - snap.time)))
+            .reduce(f32::min)
+            .map(|end| GhostificationData {
+                delta_time: Positive::new(end - snap.time).expect("Positive"),
+                time: end,
+            })
+    }
+
+    fn apply_collision<const N: usize>(&mut self, event: CollisionSimulationEvent<N>, new_timestamp: Timestamp) {
         assert!(event.snaps.iter().map(|snap| snap.handle).all_unique(), "Self-collision of a single handle is not yet implemented");
 
         // TEMP: Maybe possible with time travel? (i think not)
         debug_assert!(event.snaps.iter().map(|snap| (snap.object_id, snap.sub_id)).all_unique());
-
-        let child_timeline = event.child_timeline(&self.multiverse);
-        let parent_timeline = event.parent_timeline(&self.multiverse);
-
-        let new_timestamp = if child_timeline != parent_timeline {
-            todo!()
-        }
-        else {
-            self.timeline_timestamps.get_mut(&parent_timeline)
-                .expect("Exists")
-                .push(TimestampDelta {
-                    delta_t: event.col.impact_delta_time,
-                })
-        };
 
         for i in 0..N {
             // TEMP: This can only happen whith timeline branches
@@ -825,27 +801,9 @@ impl Simulator {
         }
     }
 
-    fn apply_portal_traversal(&mut self, event: PortalTraversalSimulationEvent) {
+    fn apply_portal_traversal(&mut self, event: PortalTraversalSimulationEvent, new_timestamp: Timestamp) {
         debug_assert!(!event.snap.portal_traversals.iter()
             .any(|traversal| traversal.half_portal_idx == event.data.half_portal_idx));
-
-        let snap_sub_id = event.snap.sub_id;
-        // TODO: Maybe just a random sub_id should be good
-        // Generate a new sub_id by just incrementing from the max one
-        let gened_sub_id = self.integrate(event.snap.handle).iter()
-            .map(|snap| snap.sub_id).max().unwrap_or(0) + 1;
-
-        let (sub_id_in, sub_id_out) = if event.data.traversal_direction.is_going_in() {
-            (snap_sub_id, gened_sub_id)
-        } else {
-            (gened_sub_id, snap_sub_id)
-        };
-
-        let new_timestamp = self.timeline_timestamps.get_mut(&event.snap.timeline_id)
-            .expect("Exists")
-            .push(TimestampDelta {
-                delta_t: event.data.delta_range.start,
-            });
 
         let new_partial = sg::PartialSnapshot {
             delta_age: event.snap.extrapolated_by + event.data.delta_range.start,
@@ -856,8 +814,8 @@ impl Simulator {
                     direction: event.data.direction,
                     // FIXME: Is this correct?
                     delta_end: Positive::new(event.data.delta_range.end - event.data.delta_range.start).expect("positive"),
-                    sub_id_in,
-                    sub_id_out,
+                    sub_id: event.snap.sub_id,
+                    traversal_direction: event.data.traversal_direction,
                 },
             }
         };
@@ -866,17 +824,45 @@ impl Simulator {
         println!("Created handle {n}");
     }
 
+    fn apply_ghostification(&mut self, event: GhostificationSimulationEvent, new_timestamp: Timestamp) {
+        let new_partial = sg::PartialSnapshot {
+            delta_age: event.snap.extrapolated_by + event.data.delta_time,
+            new_timestamp,
+            delta: sg::PartialSnapshotDelta::Ghostification { sub_id: event.snap.sub_id },
+        };
+        println!("[1/1] {new_partial:?}");
+        let n = self.snapshots.insert(new_partial, event.snap.handle);
+        println!("Created handle {n}");
+    }
+
     fn apply_simulation_event(&mut self, info: GenericSimulationEventInfo) {
+        let child_timeline = info.child_timeline(&self.multiverse);
+        let parent_timeline = info.parent_timeline(&self.multiverse);
+
+        let new_timestamp = if child_timeline != parent_timeline {
+            todo!()
+        }
+        else {
+            self.timeline_timestamps.get_mut(&parent_timeline)
+                .expect("Exists")
+                .push(TimestampDelta {
+                    delta_t: info.impact_delta_time(),
+                })
+        };
+
         match info {
             GenericSimulationEventInfo::OneCollision(event) => {
-                self.apply_collision(event);
+                self.apply_collision(event, new_timestamp);
             },
             GenericSimulationEventInfo::TwoCollision(event) => {
-                self.apply_collision(event);
+                self.apply_collision(event, new_timestamp);
             },
             GenericSimulationEventInfo::PortalTraversal(event) => {
-                self.apply_portal_traversal(event);
+                self.apply_portal_traversal(event, new_timestamp);
             },
+            GenericSimulationEventInfo::Ghostification(event) => {
+                self.apply_ghostification(event, new_timestamp);
+             },
         }
     }
 
@@ -962,11 +948,8 @@ impl Simulator {
                     let end = f32::min(*self.max_time - snap.time, MAX_DT);
                     debug_assert!(end >= 0.);
                     self.cast_portal_traversal(snap, half_portal_idx, 0. .. end)
-                    .map(|data| PortalTraversalSimulationEvent {
-                        data,
-                        snap,
-                    })
-                    .map(GenericSimulationEventInfo::from)
+                    .map(|data| PortalTraversalSimulationEvent { data, snap })
+                    .map(GenericSimulationEventInfo::PortalTraversal)
                 })
             )
             // ball-wall collisions
@@ -976,11 +959,8 @@ impl Simulator {
                     let end = f32::min(*self.max_time - snap.time, MAX_DT);
                     debug_assert!(end >= 0.);
                     self.cast_ball_wall_collision(snap, 0. .. end)
-                    .map(|col| CollisionSimulationEvent {
-                        col,
-                        snaps: [snap],
-                    })
-                    .map(GenericSimulationEventInfo::from)
+                    .map(|col| CollisionSimulationEvent { col, snaps: [snap] })
+                    .map(GenericSimulationEventInfo::OneCollision)
                 })
             )
             // ball-ball collisions
@@ -991,11 +971,17 @@ impl Simulator {
                     let end = f32::min(*self.max_time - s1.time, MAX_DT);
                     debug_assert!(end >= 0.);
                     self.cast_ball_ball_collision(s1, s2, 0. .. end)
-                    .map(|col| CollisionSimulationEvent {
-                        col,
-                        snaps: [s1, s2],
-                    })
-                    .map(GenericSimulationEventInfo::from)
+                    .map(|col| CollisionSimulationEvent { col, snaps: [s1, s2] })
+                    .map(GenericSimulationEventInfo::TwoCollision)
+                })
+            )
+            .chain(
+                leafs.iter()
+                .filter_map(|snap| {
+                    let end = f32::min(*self.max_time - snap.time, MAX_DT);
+                    self.cast_ball_ghostification(snap, 0. .. end)
+                    .map(|data| GhostificationSimulationEvent { data, snap })
+                    .map(GenericSimulationEventInfo::Ghostification)
                 })
             )
             .inspect(|col| debug_assert!(col.impact_delta_time() <= MAX_DT))
