@@ -161,9 +161,9 @@ pub struct RootSnapshot {
 pub struct PartialPortalTraversal {
     pub half_portal_idx: usize,
     pub direction: PortalDirection,
-    /// In how much time does this portal traversal ends with the current
+    /// How much time does this portal traversal ends with the current
     /// velocity
-    pub delta_end: Positive,
+    pub duration: Positive,
     pub sub_id: usize,
     pub traversal_direction: PortalTraversalDirection,
 }

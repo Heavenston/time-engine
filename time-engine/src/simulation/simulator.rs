@@ -376,7 +376,7 @@ impl Simulator {
                     half_portal_idx: traversal.half_portal_idx,
                     direction: traversal.direction,
                     traversal_direction: traversal.traversal_direction,
-                    time_range: ..new_snapshot.time + traversal.delta_end.get(),
+                    time_range: ..new_snapshot.time + traversal.duration.get(),
                 });
 
                 ghost_snapshot.sub_id = new_sub_id();
@@ -386,7 +386,7 @@ impl Simulator {
                     half_portal_idx: half_portal.linked_to,
                     direction: traversal.direction.swap(),
                     traversal_direction: traversal.traversal_direction.swap(),
-                    time_range: ..ghost_snapshot.time + traversal.delta_end.get(),
+                    time_range: ..ghost_snapshot.time + traversal.duration.get(),
                 });
 
                 Some(ghost_snapshot)
@@ -813,7 +813,7 @@ impl Simulator {
                     half_portal_idx: event.data.half_portal_idx,
                     direction: event.data.direction,
                     // FIXME: Is this correct?
-                    delta_end: Positive::new(event.data.delta_range.end - event.data.delta_range.start).expect("positive"),
+                    duration: Positive::new(event.data.delta_range.end - event.data.delta_range.start).expect("positive"),
                     sub_id: event.snap.sub_id,
                     traversal_direction: event.data.traversal_direction,
                 },
