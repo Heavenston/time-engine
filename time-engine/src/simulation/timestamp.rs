@@ -1,12 +1,15 @@
 use std::ops::Index;
+use std::sync::atomic::AtomicU64;
 
 use super::*;
 
-// TODO: Implement in debug mode a check that each Timestamp belongs to the correct
-// TimestampList on every usage with a global id counter
+#[cfg(debug_assertions)]
+static TIMESTAMP_LIST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Timestamp {
+    #[cfg(debug_assertions)]
+    list_id: u64,
     idx: u32,
 }
 
@@ -15,14 +18,18 @@ impl Timestamp {
         self.idx.try_into().expect("No overflow")
     }
 
-    fn from_idx(idx: usize) -> Self {
+    fn from_idx(idx: usize, list_id: u64) -> Self {
         Self {
+            #[cfg(debug_assertions)]
+            list_id,
             idx: idx.try_into().expect("No overflow"),
         }
     }
 
     fn next(self) -> Self {
         Self {
+            #[cfg(debug_assertions)]
+            list_id: self.list_id,
             idx: self.idx + 1,
         }
     }
@@ -41,12 +48,16 @@ pub struct TimestampData {
 
 #[derive(Debug, Clone)]
 pub struct TimestampList {
+    #[cfg(debug_assertions)]
+    id: u64,
     datas: Vec<TimestampData>,
 }
 
 impl TimestampList {
     pub fn new() -> Self {
         Self {
+            #[cfg(debug_assertions)]
+            id: TIMESTAMP_LIST_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             datas: vec![TimestampData {
                 delta: TimestampDelta {
                     delta_t: Positive::new(0.).expect("positive"),
@@ -58,7 +69,7 @@ impl TimestampList {
 
     pub fn first_timestamp(&self) -> Timestamp {
         assert!(self.datas.len() > 0);
-        Timestamp { idx: 0 }
+        Timestamp::from_idx(0, self.id)
     }
 
     pub fn first(&self) -> &TimestampData {
@@ -67,7 +78,11 @@ impl TimestampList {
 
     pub fn last_timestamp(&self) -> Timestamp {
         assert!(self.datas.len() > 0);
-        Timestamp { idx: (self.datas.len() - 1).try_into().expect("No overflow")}
+        Timestamp {
+            #[cfg(debug_assertions)]
+            list_id: self.id,
+            idx: (self.datas.len() - 1).try_into().expect("No overflow"),
+        }
     }
 
     pub fn last(&self) -> &TimestampData {
@@ -80,11 +95,15 @@ impl TimestampList {
 
     pub fn iter(&self) -> impl Iterator<Item = (Timestamp, &'_ TimestampData)> {
         (0..self.len()).into_iter()
-            .map(|idx| (Timestamp::from_idx(idx), &self.datas[idx]))
+            .map(|idx| (Timestamp::from_idx(idx, self.id), &self.datas[idx]))
     }
 
     pub fn push(&mut self, delta: TimestampDelta) -> Timestamp {
-        let ts = Timestamp { idx: self.datas.len().try_into().expect("No overflow") };
+        let ts = Timestamp {
+            #[cfg(debug_assertions)]
+            list_id: self.id,
+            idx: self.datas.len().try_into().expect("No overflow"),
+        };
 
         let previous_sum = self.datas.last().expect("Not empty").running_sum;
         self.datas.push(TimestampData {
@@ -105,6 +124,8 @@ impl Index<Timestamp> for TimestampList {
     type Output = TimestampData;
 
     fn index(&self, index: Timestamp) -> &Self::Output {
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(index.list_id, self.id, "Using timestamp from another list");
         &self.datas[index.idx()]
     }
 }
