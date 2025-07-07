@@ -653,20 +653,26 @@ impl Simulator {
             return None;
         }
 
+        // When just touching a portal but with a velocity that makes it quickly
+        // untouch the portal we ignore this very small traversal
+        if range_overlap.end <= DEFAULT_EPSILON {
+            return None;
+        }
+
         let h2 = half_portal.height/2.;
         let portal_shape = parry2d::shape::Polyline::new(
             vec![Vec2::new(0., -h2).to_na(), Vec2::new(0., h2).to_na()],
             None
         );
 
-        let collision = dbg!(parry2d::query::cast_shapes_nonlinear(
+        let collision = parry2d::query::cast_shapes_nonlinear(
             &parry2d::query::NonlinearRigidMotion::constant_position(
                 affine_to_isometry(half_portal.transform)
             ), &portal_shape,
             &self.snapshot_motion(snap), &collision_shape,
             range_overlap.start, range_overlap.end,
             true
-        ).expect("Compatible")?);
+        ).expect("Compatible")?;
 
         // The collision is a better 'estimate' of when the traversal starsts
         let delta_range = Positive::new(collision.time_of_impact).expect("positive")..Positive::new(t1).expect("positive");
