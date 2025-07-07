@@ -50,7 +50,7 @@ struct AppState {
 impl AppState {
     fn new() -> Self {
         let scenes = get_all_scenes();
-        let scene = Arc::clone(&scenes[3]);
+        let scene = Arc::clone(&scenes[0]);
         let sim = Arc::new(scene.create_world_state());
         let simulator = sim.clone().create_simulator(scene.default_max_time());
         
