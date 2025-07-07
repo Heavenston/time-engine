@@ -1,6 +1,6 @@
 use super::*;
 
-use std::{ fmt::Display, ops::{ Deref, DerefMut, Index }, range::Range, sync::atomic::AtomicU64 };
+use std::{ fmt::Display, ops::{ Deref, DerefMut, Index }, range::RangeTo, sync::atomic::AtomicU64 };
 
 use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
@@ -37,9 +37,7 @@ pub struct PortalTraversal {
     pub half_portal_idx: usize,
     pub direction: PortalDirection,
     pub traversal_direction: PortalTraversalDirection,
-    // TODO: Convert to RangeTo<f32> as the start should always be the start of
-    //       the snapshot
-    pub time_range: Range<f32>,
+    pub time_range: RangeTo<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

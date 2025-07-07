@@ -360,11 +360,11 @@ impl Simulator {
                 // means changes to when traversal ends
                 for i in 0..new_snapshot.portal_traversals.len() {
                     let traversal = &new_snapshot.portal_traversals[i];
-                    let Some((new_delta_start, new_delta_end, traversal_direction)) = self.cast_portal_traversal_start_end(&new_snapshot, traversal.half_portal_idx)
+                    let Some((_, new_delta_end, traversal_direction)) = self.cast_portal_traversal_start_end(&new_snapshot, traversal.half_portal_idx)
                     else { unreachable!("Should have been known/'detected' by the time_range before ?") };
 
                     let traversal = &mut new_snapshot.portal_traversals[i];
-                    traversal.time_range = new_snapshot.time + new_delta_start..new_snapshot.time + new_delta_end;
+                    traversal.time_range = ..new_snapshot.time + new_delta_end;
 
                     if not_moving {
                         traversal.traversal_direction = sg::PortalTraversalDirection::NotMoving;
@@ -406,7 +406,7 @@ impl Simulator {
                     half_portal_idx: traversal.half_portal_idx,
                     direction: traversal.direction,
                     traversal_direction,
-                    time_range: new_snapshot.time..new_snapshot.time + traversal.delta_end.get(),
+                    time_range: ..new_snapshot.time + traversal.delta_end.get(),
                 });
 
                 ghost_snapshot.sub_id = other_id;
@@ -416,7 +416,7 @@ impl Simulator {
                     half_portal_idx: half_portal.linked_to,
                     direction: traversal.direction.swap(),
                     traversal_direction: traversal_direction.swap(),
-                    time_range: ghost_snapshot.time..ghost_snapshot.time + traversal.delta_end.get(),
+                    time_range: ..ghost_snapshot.time + traversal.delta_end.get(),
                 });
 
                 Some(ghost_snapshot)
