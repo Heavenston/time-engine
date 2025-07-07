@@ -44,9 +44,9 @@ pub fn render_simulation(
     // Draw balls
     for snap in simulator.time_query(time)
         .filter_map(|snap| snap.extrapolate_to(time))
-        .filter(|snap| enable_debug_rendering || !snap.validity_time_range.is_later(time))
     {
-        let is_ghost = !snap.validity_time_range.contains(&time);
+        // let is_ghost = !snap.validity_time_range.contains(&time);
+        let is_ghost = false;
         let te::sg::Snapshot {
             pos, linvel,
             ..

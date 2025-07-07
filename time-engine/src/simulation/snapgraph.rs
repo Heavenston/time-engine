@@ -66,9 +66,6 @@ pub struct Snapshot {
 
     pub portal_traversals: AutoSmallVec<PortalTraversal>,
     pub force_transform: Affine2,
-
-    #[deprecated]
-    pub validity_time_range: TimeRange,
 }
 
 impl Snapshot {
@@ -110,10 +107,6 @@ impl Snapshot {
         else {
             unreachable!("New time must be higher than current time ({to} is lower than {})", self.time);
         };
-
-        if self.validity_time_range.end().is_some_and(|end| end <= to) {
-            return None;
-        }
 
         Some(Self {
             age: self.age + dt,

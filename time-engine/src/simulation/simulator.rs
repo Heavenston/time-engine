@@ -320,8 +320,6 @@ impl Simulator {
             // computed later
             portal_traversals: smallvec![],
             force_transform: Affine2::IDENTITY,
-
-            validity_time_range: TimeRange::from(..),
         }
     }
 

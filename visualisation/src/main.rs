@@ -420,8 +420,7 @@ impl AppState {
                 {
                     let pp = self.simulator.time_query(self.time)
                         .map(|snap| {format!(
-                            "{snap} - {:?} - {}",
-                            snap.validity_time_range,
+                            "{snap} - {}",
                             snap.portal_traversals.iter()
                                 .map(|traversal| format!(
                                     "{} {:?} {:?} {:?}",
