@@ -33,14 +33,14 @@ mod graph_id {
 }
 use graph_id::*;
 
-pub trait DeltaGraphDataType: 'static {
+pub trait DeltaGraphDataType: Sized + 'static {
     type RootData: Clone + Debug + 'static;
     type PartialData: Clone + Debug + 'static;
-    type IntegratedData: Clone + Debug + 'static;
-    type Ctx;
+    type IntegratedData: 'static + ?Sized;
+    type Ctx<'a>;
 
-    fn integrate_root(ctx: &mut Self::Ctx, root: &Self::RootData) -> Self::IntegratedData;
-    fn integrate_partial(ctx: &mut Self::Ctx, running: &Self::IntegratedData, partial: &Self::PartialData) -> Self::IntegratedData;
+    fn integrate_root(ctx: &mut Self::Ctx<'_>, graph: &DeltaGraph<Self>, handle: RootNodeHandle, root: &Self::RootData) -> Arc<Self::IntegratedData>;
+    fn integrate_partial(ctx: &mut Self::Ctx<'_>, graph: &DeltaGraph<Self>, handle: InnerNodeHandle, running: &Self::IntegratedData, partial: &Self::PartialData) -> Arc<Self::IntegratedData>;
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -98,7 +98,6 @@ impl From<RootNodeHandle> for NodeHandle {
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct InnerNodeHandle {
-    #[cfg(debug_assertions)]
     graph_id: GraphId,
     idx: usize,
 }
@@ -122,7 +121,6 @@ impl Display for InnerNodeHandle {
 impl From<InnerNodeHandle> for NodeHandle {
     fn from(val: InnerNodeHandle) -> Self {
         NodeHandle {
-            #[cfg(debug_assertions)]
             graph_id: val.graph_id,
             idx: val.idx,
         }
@@ -251,7 +249,6 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
     fn handle(&self, idx: usize) -> NodeHandle {
         NodeHandle {
             idx,
-            #[cfg(debug_assertions)]
             graph_id: self.id,
         }
     }
@@ -260,7 +257,6 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
         debug_assert!(matches!(self.nodes[idx], Node::Root(..)));
         RootNodeHandle {
             idx,
-            #[cfg(debug_assertions)]
             graph_id: self.id,
         }
     }
@@ -269,7 +265,6 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
         debug_assert!(matches!(self.nodes[idx], Node::Inner(..)));
         InnerNodeHandle {
             idx,
-            #[cfg(debug_assertions)]
             graph_id: self.id,
         }
     }
@@ -341,13 +336,13 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
 
     fn set_integration_cache(&self, idx: usize, val: Arc<D::IntegratedData>) {
         let mut integration_cache = self.integration_cache.write();
-        if integration_cache.len() < idx {
+        if integration_cache.len() <= idx {
             integration_cache.resize_with(idx + 1, || None);
         }
         integration_cache[idx] = Some(val);
     }
 
-    pub fn integrate<'a, 'b>(&'a self, ctx: &'b mut D::Ctx, mut handle: NodeHandle) -> Arc<D::IntegratedData> {
+    pub fn integrate<'a, 'b>(&'a self, ctx: &'b mut D::Ctx<'b>, mut handle: NodeHandle) -> Arc<D::IntegratedData> {
         self.assert_handle(handle);
 
         // iterative implementation of the naive recursive implementation
@@ -361,8 +356,13 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
             }
 
             handle = match self.get(handle) {
-                NodeRef::Root { root_node, .. } => {
-                    let integrated = Arc::new(D::integrate_root(ctx, &root_node.data));
+                NodeRef::Root { root_node, root_handle } => {
+                    let integrated = D::integrate_root(
+                        ctx,
+                        self,
+                        root_handle,
+                        &root_node.data,
+                    );
                     self.set_integration_cache(handle.idx, Arc::clone(&integrated));
                     break integrated;
                 },
@@ -374,9 +374,15 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
         };
 
         // forward loop (integrate all nodes on the path)
-        for current_handle in stack.iter().rev() {
+        for current_handle in stack.into_iter().rev() {
             let inner_node = &self[current_handle];
-            integrated = Arc::new(D::integrate_partial(ctx, &*integrated, &inner_node.data));
+            integrated = D::integrate_partial(
+                ctx,
+                self,
+                current_handle,
+                &*integrated,
+                &inner_node.data
+            );
             self.set_integration_cache(current_handle.idx, Arc::clone(&integrated));
         }
 

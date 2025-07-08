@@ -9,8 +9,9 @@ use parry2d::shape::Shape;
 use smallvec::smallvec;
 use ordered_float::OrderedFloat as OF;
 
+use crate::sg::DeprecatedTimelineIdDummy as _;
+
 use super::*;
-use sg::GenericNode as _;
 
 /// All portals are eternal (always existed and will always exist)
 /// and are present in all timelines
@@ -174,20 +175,18 @@ struct PortalTraversalCheckResult {
 
 #[derive(Debug)]
 pub struct Simulator {
-    world_state: Arc<WorldState>,
-    multiverse: TimelineMultiverse,
-    snapshots: sg::SnapshotGraph,
-    // TODO: Use a 'sorted map' since handles are linear...
-    integration_cache: RwLock<HashMap<sg::NodeHandle, Arc<[sg::Snapshot]>>>,
+    pub(super) world_state: Arc<WorldState>,
+    pub(super) multiverse: TimelineMultiverse,
+    pub(super) snapshots: sg::SnapshotGraph,
 
     /// The first snapshot of all balls
-    starts: Ro<Box<[sg::RootNodeHandle]>>,
-    half_portals: Vec<HalfPortal>,
+    pub(super) starts: Ro<Box<[sg::RootNodeHandle]>>,
+    pub(super) half_portals: Vec<HalfPortal>,
 
-    timeline_timestamps: HashMap<TimelineId, TimestampList>,
+    pub(super) timeline_timestamps: HashMap<TimelineId, TimestampList>,
 
     /// Cannot be changed without recomputing everything, i think
-    max_time: Ro<f32>,
+    pub(super) max_time: Ro<f32>,
 }
 
 impl Simulator {
@@ -233,7 +232,6 @@ impl Simulator {
             world_state,
             multiverse,
             snapshots,
-            integration_cache: default(),
 
             starts: starts.clone().into_boxed_slice().into(),
             half_portals,
@@ -265,198 +263,21 @@ impl Simulator {
         *self.max_time
     }
 
-    // pub fn is_snapshot_ghost(&self, snap: &sg::Snapshot) -> bool {
-    //     snap.portal_traversals.iter()
-    //         // only take finished traversal (we cant be fully ghost if we are still traversing the portal)
-    //         .filter(|traversal| traversal.range.is_finished(snap.time))
-    //         .any(|traversal| {
-    //             let inv_trans = self.half_portals[traversal.half_portal_idx].transform.inverse();
-    //             let rel_pos = inv_trans.transform_point2(snap.pos);
-    //             (rel_pos.x < 0.) != traversal.direction.is_front()
-    //         })
-    // }
-
-    // pub fn compute_snapshot_ghostification_time(&self, snap: &sg::Snapshot) -> Option<f32> {
-    //     snap.portal_traversals.iter()
-    //         .filter_map(|traversal| {
-    //             // clamp end time to at least snap.time
-    //             // as the traversal may have finished in the past
-    //             // also
-    //             // traversals that never finish can never make a ghost
-    //             let et = traversal.range.end.max(snap.time);
-    //             let dt = et - snap.time;
-    //             let pos = snap.pos + snap.linvel * dt;
-
-    //             let inv_trans = self.half_portals[traversal.half_portal_idx].transform.inverse();
-    //             let rel_pos = inv_trans.transform_point2(pos);
-
-    //             ((rel_pos.x < 0.) != traversal.direction.is_front())
-    //                 .then_some(et)
-    //         })
-    //         .reduce(f32::min)
-    // }
-
-    fn integrate_root_node(
-        &self,
-        handle: sg::NodeHandle,
-        root_snap: &sg::RootSnapshot,
-    ) -> sg::Snapshot {
-        sg::Snapshot {
-            object_id: root_snap.object_id,
-            handle,
-            sub_id: 0,
-            extrapolated_by: Positive::new(0.).expect("Positive"),
-
-            timeline_id: self.multiverse.root(),
-            timestamp: self.timeline_timestamps[&self.multiverse.root()].first_timestamp(),
-            // All objects starts with age 0 at time 0
-            age: Positive::new(0.).expect("Positive"),
-            time: 0.,
-
-            linvel: root_snap.linvel,
-            angvel: root_snap.angvel,
-
-            pos: root_snap.pos,
-            rot: root_snap.rot,
-
-            // computed later
-            portal_traversals: smallvec![],
-            force_transform: Affine2::IDENTITY,
-        }
-    }
-
-    fn integrate_inner_node(
-        &self,
-        handle: sg::NodeHandle,
-        snapshot: &sg::Snapshot,
-        partial: &sg::PartialSnapshot,
-        new_sub_id: &mut impl FnMut() -> usize,
-    ) -> SmallVec<sg::Snapshot, 2> {
-        let mut new_snapshot = snapshot.clone();
-        new_snapshot.integrate_by(partial.delta_age);
-        new_snapshot.handle = handle;
-
-        new_snapshot.portal_traversals.retain(|traversal| {
-            !traversal.time_range.is_finished(new_snapshot.time)
-        });
-        new_snapshot.timestamp = partial.new_timestamp;
-        
-        // Portal traversals only affect a single sub_id
-        // whereas impulses affect all sub_id s
-        let ghost_snapshot: Option<sg::Snapshot> = match &partial.delta {
-            sg::PartialSnapshotDelta::Impulse { linear, angular } => {
-                new_snapshot.linvel += snapshot.force_transform.transform_vector2(*linear);
-                new_snapshot.angvel += angular;
-
-                // Re-compute the end of each traversals as change in velocity
-                // means changes to when traversal ends
-                for i in 0..new_snapshot.portal_traversals.len() {
-                    let traversal = &new_snapshot.portal_traversals[i];
-                    let Some((_, new_delta_end, _, velocity_direction)) = self.cast_portal_traversal_start_end(&new_snapshot, traversal.half_portal_idx)
-                    else { unreachable!("Should have been known/'detected' by the time_range before ?") };
-
-                    let traversal = &mut new_snapshot.portal_traversals[i];
-                    traversal.time_range = ..new_snapshot.time + new_delta_end;
-
-                    traversal.traversal_direction = sg::PortalTraversalDirection::
-                        from_velocity_direction(velocity_direction, traversal.direction);
-                }
-
-                None
-            },
-            sg::PartialSnapshotDelta::PortalTraversal { traversal } =>
-            if traversal.sub_id == snapshot.sub_id {
-                let mut ghost_snapshot = new_snapshot.clone();
-                let half_portal = &self.half_portals[traversal.half_portal_idx];
-                let out_half_portal = &self.half_portals[half_portal.linked_to];
-
-                let transform = out_half_portal.transform * half_portal.transform.inverse();
-                        
-                new_snapshot.portal_traversals.push(sg::PortalTraversal {
-                    half_portal_idx: traversal.half_portal_idx,
-                    direction: traversal.direction,
-                    traversal_direction: traversal.traversal_direction,
-                    time_range: ..new_snapshot.time + traversal.duration.get(),
-                });
-
-                ghost_snapshot.sub_id = new_sub_id();
-                ghost_snapshot.time += half_portal.time_offset;
-                ghost_snapshot.apply_portal_transormation(transform);
-                ghost_snapshot.portal_traversals.push(sg::PortalTraversal {
-                    half_portal_idx: half_portal.linked_to,
-                    direction: traversal.direction.swap(),
-                    traversal_direction: traversal.traversal_direction.swap(),
-                    time_range: ..ghost_snapshot.time + traversal.duration.get(),
-                });
-
-                Some(ghost_snapshot)
-            } else { None },
-            sg::PartialSnapshotDelta::Ghostification { sub_id } =>
-            if snapshot.sub_id == *sub_id { return smallvec![]; } else { None },
-        };
-
-        if let Some(additional) = ghost_snapshot {
-            smallvec![new_snapshot, additional]
-        }
-        else {
-            smallvec![new_snapshot]
-        }
-    }
-
     pub fn integrate(&self, handle: sg::NodeHandle) -> Arc<[sg::Snapshot]> {
-        if let Some(snap) = self.integration_cache.read().get(&handle).map(Arc::clone) {
-            return snap;
-        }
-
-
-        let out_snapshots = match &self.snapshots[handle] {
-            sg::Node::Root(root_node) => {
-                let root_snap = &root_node.snapshot;
-                vec![self.integrate_root_node(handle, root_snap)]
-            },
-            sg::Node::Inner(inner_node) => {
-                let snapshots = self.integrate(inner_node.previous);
-                let partial = &inner_node.partial;
-
-                let mut new_sub_id = {
-                    let mut counter = snapshots.iter().map(|snap| snap.sub_id)
-                        .max().expect("If new_sub_id is called this cannot be empty");
-                    move || {
-                        counter += 1;
-                        counter
-                    }
-                };
-                // applies the 'partial' to all snapshots
-                snapshots.iter()
-                    .inspect(|snapshot| debug_assert_eq!(snapshot.handle, inner_node.previous))
-                    .inspect(|snapshot| debug_assert_eq!(snapshot.extrapolated_by.get(), 0.))
-                    .flat_map(|snapshot| self.integrate_inner_node(handle, snapshot, partial, &mut new_sub_id))
-                    .inspect(|snapshot| debug_assert_eq!(snapshot.handle, handle))
-                    .collect_vec()
-            },
-        };
-
-        debug_assert!(out_snapshots.iter().map(|snap| snap.sub_id).all_unique(), "{out_snapshots:#?}");
-
-        if !out_snapshots.is_empty() {
-            println!("handle = {handle}, snaps: {}", out_snapshots.iter().join(" "));
-        }
-
-        return Arc::clone(self.integration_cache.write().entry(handle)
-            .or_insert(out_snapshots.into_boxed_slice().into()));
+        self.snapshots.integrate(&mut &*self, handle)
     }
 
     pub fn get_node_max_dt(&self, node: &sg::Node, timeline_id: Option<TimelineId>) -> Option<Positive> {
         node.children().iter().copied()
             .filter(|&child_handle| timeline_id.is_none_or(|timeline_id| self.multiverse.is_parent(self.snapshots[child_handle].timeline_id(), timeline_id)))
-            .map(|child_handle| self.snapshots[child_handle].partial.delta_age)
+            .map(|child_handle| self.snapshots[child_handle].data.delta_age)
             .max()
     }
 
     pub fn get_node_next_timestamp(&self, node: &sg::Node, timeline_id: TimelineId) -> Option<Timestamp> {
         node.children().iter().copied()
             .filter(|&child_handle| self.multiverse.is_parent(self.snapshots[child_handle].timeline_id(), timeline_id))
-            .map(|child_handle| self.snapshots[child_handle].partial.new_timestamp)
+            .map(|child_handle| self.snapshots[child_handle].data.new_timestamp)
             .at_most_one().expect("Cannot be two children for the same timeline id")
     }
 
@@ -574,7 +395,7 @@ impl Simulator {
 
     /// Computes when the given snapshot will start colliding with the portal
     /// and when it will stop, do not take into account the size of the 
-    fn cast_portal_traversal_start_end(
+    pub(super) fn cast_portal_traversal_start_end(
         &self,
         snap: &sg::Snapshot,
         half_portal_idx: usize,

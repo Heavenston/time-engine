@@ -1,9 +1,12 @@
 use super::*;
 
-use std::{ fmt::Display, ops::{ Deref, DerefMut, Index }, range::RangeTo, sync::atomic::AtomicU64 };
+use std::{ fmt::Display, range::RangeTo, sync::Arc };
 
 use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
+use smallvec::smallvec;
+
+pub use dg::{ NodeHandle, InnerNodeHandle, RootNodeHandle, GenericNode };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortalTraversalDirection {
@@ -11,6 +14,55 @@ pub enum PortalTraversalDirection {
     NotMoving,
     GoingIn,
     GoingOut,
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+pub struct RootSnapshot {
+    pub object_id: usize,
+
+    pub pos: Vec2,
+    pub rot: f32,
+
+    pub linvel: Vec2,
+    pub angvel: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartialPortalTraversal {
+    pub half_portal_idx: usize,
+    pub direction: PortalDirection,
+    /// How much time does this portal traversal ends with the current
+    /// velocity
+    pub duration: Positive,
+    pub sub_id: usize,
+    pub traversal_direction: PortalTraversalDirection,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PartialSnapshotDelta {
+    Impulse {
+        /// Is in *local* space
+        linear: Vec2,
+        /// Is in *local* space... but because there is never any mirroring
+        /// this is the same as global space
+        angular: f32,
+    },
+    PortalTraversal {
+        /// After the impulse is applied this is the list of current portal traversals
+        traversal: PartialPortalTraversal,
+    },
+    Ghostification {
+        sub_id: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartialSnapshot {
+    /// How much time *after* the previous snapshot does this one
+    /// happens in local time
+    pub delta_age: Positive,
+    pub new_timestamp: Timestamp,
+    pub delta: PartialSnapshotDelta,
 }
 
 impl PortalTraversalDirection {
@@ -142,395 +194,159 @@ impl Snapshot {
 
 impl Display for Snapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "obj{}({}.{} {}+{}s)", self.object_id, self.handle.idx, self.sub_id, self.time, self.extrapolated_by)
+        write!(f, "obj{}({}.{} {}+{}s)", self.object_id, self.handle, self.sub_id, self.time, self.extrapolated_by)
     }
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq)]
-pub struct RootSnapshot {
-    pub object_id: usize,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapgraphDataType;
 
-    pub pos: Vec2,
-    pub rot: f32,
+impl dg::DeltaGraphDataType for SnapgraphDataType {
+    type RootData = RootSnapshot;
+    type PartialData = PartialSnapshot;
+    type IntegratedData = [Snapshot];
+    type Ctx<'a> = &'a Simulator;
 
-    pub linvel: Vec2,
-    pub angvel: f32,
-}
+    fn integrate_root(
+        ctx: &mut Self::Ctx<'_>,
+        _graph: &dg::DeltaGraph<Self>,
+        handle: RootNodeHandle,
+        root_snap: &Self::RootData,
+    ) -> Arc<[Snapshot]> {
+        let snapshot = sg::Snapshot {
+            object_id: root_snap.object_id,
+            handle: handle.into(),
+            sub_id: 0,
+            extrapolated_by: Positive::new(0.).expect("Positive"),
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct PartialPortalTraversal {
-    pub half_portal_idx: usize,
-    pub direction: PortalDirection,
-    /// How much time does this portal traversal ends with the current
-    /// velocity
-    pub duration: Positive,
-    pub sub_id: usize,
-    pub traversal_direction: PortalTraversalDirection,
-}
+            timeline_id: ctx.multiverse.root(),
+            timestamp: ctx.timeline_timestamps[&ctx.multiverse.root()].first_timestamp(),
+            // All objects starts with age 0 at time 0
+            age: Positive::new(0.).expect("Positive"),
+            time: 0.,
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum PartialSnapshotDelta {
-    Impulse {
-        /// Is in *local* space
-        linear: Vec2,
-        /// Is in *local* space... but because there is never any mirroring
-        /// this is the same as global space
-        angular: f32,
-    },
-    PortalTraversal {
-        /// After the impulse is applied this is the list of current portal traversals
-        traversal: PartialPortalTraversal,
-    },
-    Ghostification {
-        sub_id: usize,
-    },
-}
+            linvel: root_snap.linvel,
+            angvel: root_snap.angvel,
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct PartialSnapshot {
-    /// How much time *after* the previous snapshot does this one
-    /// happens in local time
-    pub delta_age: Positive,
-    pub new_timestamp: Timestamp,
-    pub delta: PartialSnapshotDelta,
-}
+            pos: root_snap.pos,
+            rot: root_snap.rot,
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct NodeHandle {
-    #[cfg(debug_assertions)]
-    graph_id: u64,
-    idx: usize,
-}
+            // computed later
+            portal_traversals: smallvec![],
+            force_transform: Affine2::IDENTITY,
+        };
 
-impl PartialOrd for NodeHandle {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        #[cfg(debug_assertions)]
-        if self.graph_id != other.graph_id {
-            return None;
-        }
-
-        self.idx.partial_cmp(&other.idx)
+        Arc::from(vec![snapshot].into_boxed_slice())
     }
-}
 
-impl Display for NodeHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.idx)
+    fn integrate_partial(
+        ctx: &mut Self::Ctx<'_>,
+        _graph: &dg::DeltaGraph<Self>,
+        handle: InnerNodeHandle,
+        snapshots: &[Snapshot],
+        partial: &Self::PartialData,
+    ) -> Arc<[Snapshot]> {
+        let mut new_sub_id = {
+            let mut counter = snapshots.iter().map(|snap| snap.sub_id)
+                .max().expect("If new_sub_id is called this cannot be empty");
+            move || {
+                counter += 1;
+                counter
+            }
+        };
+
+        let new_snapshots = snapshots.iter()
+        .flat_map(|snapshot| -> AutoSmallVec<_> {
+            let mut new_snapshot = snapshot.clone();
+            new_snapshot.integrate_by(partial.delta_age);
+            new_snapshot.handle = handle.into();
+
+            new_snapshot.portal_traversals.retain(|traversal| {
+                !traversal.time_range.is_finished(new_snapshot.time)
+            });
+            new_snapshot.timestamp = partial.new_timestamp;
+    
+            // Portal traversals only affect a single sub_id
+            // whereas impulses affect all sub_id s
+            let ghost_snapshot: Option<sg::Snapshot> = match &partial.delta {
+                sg::PartialSnapshotDelta::Impulse { linear, angular } => {
+                    new_snapshot.linvel += snapshot.force_transform.transform_vector2(*linear);
+                    new_snapshot.angvel += angular;
+
+                    // Re-compute the end of each traversals as change in velocity
+                    // means changes to when traversal ends
+                    for i in 0..new_snapshot.portal_traversals.len() {
+                        let traversal = &new_snapshot.portal_traversals[i];
+                        let Some((_, new_delta_end, _, velocity_direction)) = ctx.cast_portal_traversal_start_end(&new_snapshot, traversal.half_portal_idx)
+                        else { unreachable!("Should have been known/'detected' by the time_range before ?") };
+
+                        let traversal = &mut new_snapshot.portal_traversals[i];
+                        traversal.time_range = ..new_snapshot.time + new_delta_end;
+
+                        traversal.traversal_direction = sg::PortalTraversalDirection::
+                            from_velocity_direction(velocity_direction, traversal.direction);
+                    }
+
+                    None
+                },
+                sg::PartialSnapshotDelta::PortalTraversal { traversal } =>
+                if traversal.sub_id == snapshot.sub_id {
+                    let mut ghost_snapshot = new_snapshot.clone();
+                    let half_portal = &ctx.half_portals[traversal.half_portal_idx];
+                    let out_half_portal = &ctx.half_portals[half_portal.linked_to];
+
+                    let transform = out_half_portal.transform * half_portal.transform.inverse();
+                    
+                    new_snapshot.portal_traversals.push(sg::PortalTraversal {
+                        half_portal_idx: traversal.half_portal_idx,
+                        direction: traversal.direction,
+                        traversal_direction: traversal.traversal_direction,
+                        time_range: ..new_snapshot.time + traversal.duration.get(),
+                    });
+
+                    ghost_snapshot.sub_id = new_sub_id();
+                    ghost_snapshot.time += half_portal.time_offset;
+                    ghost_snapshot.apply_portal_transormation(transform);
+                    ghost_snapshot.portal_traversals.push(sg::PortalTraversal {
+                        half_portal_idx: half_portal.linked_to,
+                        direction: traversal.direction.swap(),
+                        traversal_direction: traversal.traversal_direction.swap(),
+                        time_range: ..ghost_snapshot.time + traversal.duration.get(),
+                    });
+
+                    Some(ghost_snapshot)
+                } else { None },
+                sg::PartialSnapshotDelta::Ghostification { sub_id } =>
+                if snapshot.sub_id == *sub_id { return smallvec![]; } else { None },
+            };
+
+            if let Some(additional) = ghost_snapshot {
+                smallvec![new_snapshot, additional]
+            }
+            else {
+                smallvec![new_snapshot]
+            }
+        })
+        .collect_vec();
+
+        Arc::from(new_snapshots.into_boxed_slice())
     }
+
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RootNodeHandle {
-    #[cfg(debug_assertions)]
-    graph_id: u64,
-    idx: usize,
-}
+pub type SnapshotGraph = dg::DeltaGraph<SnapgraphDataType>;
+pub type Node = dg::Node<SnapgraphDataType>;
+pub type InnerNode = dg::InnerNode<SnapgraphDataType>;
+pub type RootNode = dg::RootNode<SnapgraphDataType>;
 
-impl Display for RootNodeHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.idx)
-    }
-}
-
-impl From<RootNodeHandle> for NodeHandle {
-    fn from(val: RootNodeHandle) -> Self {
-        NodeHandle {
-            #[cfg(debug_assertions)]
-            graph_id: val.graph_id,
-            idx: val.idx,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct InnerNodeHandle {
-    #[cfg(debug_assertions)]
-    graph_id: u64,
-    idx: usize,
-}
-
-impl Display for InnerNodeHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.idx)
-    }
-}
-
-impl From<InnerNodeHandle> for NodeHandle {
-    fn from(val: InnerNodeHandle) -> Self {
-        NodeHandle {
-            #[cfg(debug_assertions)]
-            graph_id: val.graph_id,
-            idx: val.idx,
-        }
-    }
-}
-
-pub trait GenericNode {
-    fn previous(&self) -> Option<NodeHandle>;
-    fn children(&self) -> &[InnerNodeHandle];
-    fn children_mut(&mut self) -> &mut Vec<InnerNodeHandle>;
-
+// TEMP: TODO: REMOVE
+pub trait DeprecatedTimelineIdDummy {
     #[deprecated]
     fn timeline_id(&self) -> TimelineId {
         TimelineId::root()
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RootNode {
-    pub snapshot: RootSnapshot,
-    pub children: Vec<InnerNodeHandle>,
-}
-
-impl GenericNode for RootNode {
-    fn previous(&self) -> Option<NodeHandle> {
-        None
-    }
-
-    fn children(&self) -> &[InnerNodeHandle] {
-        &self.children
-    }
-
-    fn children_mut(&mut self) -> &mut Vec<InnerNodeHandle> {
-        &mut self.children
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct InnerNode {
-    pub partial: PartialSnapshot,
-    pub previous: NodeHandle,
-    pub children: Vec<InnerNodeHandle>,
-}
-
-impl GenericNode for InnerNode {
-    fn previous(&self) -> Option<NodeHandle> {
-        Some(self.previous)
-    }
-
-    fn children(&self) -> &[InnerNodeHandle] {
-        &self.children
-    }
-
-    fn children_mut(&mut self) -> &mut Vec<InnerNodeHandle> {
-        &mut self.children
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Node {
-    Root(RootNode),
-    Inner(InnerNode),
-}
-
-impl Deref for Node {
-    type Target = dyn GenericNode;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Node::Root(node) => node,
-            Node::Inner(node) => node,
-        }
-    }
-}
-
-impl DerefMut for Node {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            Node::Root(node) => node,
-            Node::Inner(node) => node,
-        }
-    }
-}
-
-impl From<RootNode> for Node {
-    fn from(root: RootNode) -> Self {
-        Self::Root(root)
-    }
-}
-
-impl From<InnerNode> for Node {
-    fn from(inner: InnerNode) -> Self {
-        Self::Inner(inner)
-    }
-}
-
-#[cfg(debug_assertions)]
-static GRAPH_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Debug, Clone)]
-pub struct SnapshotGraph {
-    #[cfg(debug_assertions)]
-    id: u64,
-    nodes: Vec<Node>,
-    leafs: Vec<NodeHandle>,
-}
-
-impl SnapshotGraph {
-    pub fn new() -> Self {
-        Self {
-            #[cfg(debug_assertions)]
-            id: GRAPH_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            nodes: default(),
-            leafs: vec![]
-        }
-    }
-
-    fn handle(&self, idx: usize) -> NodeHandle {
-        NodeHandle {
-            idx,
-            #[cfg(debug_assertions)]
-            graph_id: self.id,
-        }
-    }
-
-    fn root_handle(&self, idx: usize) -> RootNodeHandle {
-        debug_assert!(matches!(self.nodes[idx], Node::Root(..)));
-        RootNodeHandle {
-            idx,
-            #[cfg(debug_assertions)]
-            graph_id: self.id,
-        }
-    }
-
-    fn inner_handle(&self, idx: usize) -> InnerNodeHandle {
-        debug_assert!(matches!(self.nodes[idx], Node::Inner(..)));
-        InnerNodeHandle {
-            idx,
-            #[cfg(debug_assertions)]
-            graph_id: self.id,
-        }
-    }
-
-    pub fn get(&self, handle: NodeHandle) -> Option<&Node> {
-        #[cfg(debug_assertions)]
-        debug_assert_eq!(handle.graph_id, self.id, "Using handles from another graph");
-        self.nodes.get(handle.idx)
-    }
-
-    pub fn iter_ancestry(&'_ self, handle: NodeHandle) -> AncestryIterator<'_> {
-        AncestryIterator::new(self, Some(handle))
-    }
-
-    pub fn nodes(&self) -> impl Iterator<Item = (NodeHandle, &'_ Node)> {
-        self.nodes.iter().enumerate()
-            .map(|(idx, node)| (self.handle(idx), node))
-    }
-
-    pub fn leafs(&self) -> &[NodeHandle] {
-        &self.leafs
-    }
-
-    pub fn insert_root(&mut self, snapshot: RootSnapshot) -> RootNodeHandle {
-        self.nodes.push(RootNode {
-            snapshot,
-            children: vec![],
-        }.into());
-        let handle = self.root_handle(self.nodes.len() - 1);
-        self.leafs.push(handle.into());
-        handle
-    }
-
-    pub fn insert(&mut self, partial: PartialSnapshot, previous: impl Into<NodeHandle>) -> InnerNodeHandle {
-        let previous = previous.into();
-        if let Some((leaf_idx, _)) = self.leafs.iter().find_position(|&&handle_| previous == handle_) {
-            self.leafs.remove(leaf_idx);
-        }
-
-        self.nodes.push(InnerNode {
-            partial,
-            previous,
-            children: vec![],
-        }.into());
-        let handle = self.inner_handle(self.nodes.len()-1);
-        self.leafs.push(handle.into());
-
-        self.nodes[previous.idx].children_mut().push(handle);
-
-        // // NOTE: Imperfect test
-        // debug_assert!(
-        //     self[previous].timeline_id() <= partial.timeline_id,
-        //     "A timeline parent must have a parent timeline",
-        // );
-        // debug_assert!(
-        //     self[previous].children().iter()
-        //         .map(|child| self[child].timeline_id())
-        //         .all_unique(),
-        //     "A node cannot have multiple nodes on the same timeline",
-        // );
-
-        handle
-    }
-}
-
-impl<'a, I> Index<&'a I> for SnapshotGraph
-    where I: Clone,
-          SnapshotGraph: Index<I>
-{
-    type Output = <SnapshotGraph as Index<I>>::Output;
-
-    fn index(&'_ self, index: &'a I) -> &'_ <SnapshotGraph as Index<I>>::Output {
-        &self[index.clone()]
-    }
-}
-
-impl Index<NodeHandle> for SnapshotGraph {
-    type Output = Node;
-
-    fn index(&self, index: NodeHandle) -> &Self::Output {
-        self.get(index).expect("Invalid handle")
-    }
-}
-
-impl Index<RootNodeHandle> for SnapshotGraph {
-    type Output = RootNode;
-
-    fn index(&self, handle: RootNodeHandle) -> &Self::Output {
-        match &self[NodeHandle::from(handle)] {
-            Node::Root(root_node) => root_node,
-            Node::Inner(_) => unreachable!(),
-        }
-    }
-}
-
-impl Index<InnerNodeHandle> for SnapshotGraph {
-    type Output = InnerNode;
-
-    fn index(&self, handle: InnerNodeHandle) -> &Self::Output {
-        match &self[NodeHandle::from(handle)] {
-            Node::Inner(inner_node) => inner_node,
-            Node::Root(_) => unreachable!(),
-        }
-    }
-}
-
-impl Default for SnapshotGraph {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub struct AncestryIterator<'a> {
-    graph: &'a SnapshotGraph,
-    latest: Option<NodeHandle>,
-}
-
-impl<'a> AncestryIterator<'a> {
-    pub fn new(graph: &'a SnapshotGraph, latest: Option<NodeHandle>) -> Self {
-        Self {
-            graph,
-            latest,
-        }
-    }
-}
-
-impl<'a> Iterator for AncestryIterator<'a> {
-    type Item = (NodeHandle, &'a Node);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let handle = self.latest?;
-        let node = &self.graph[handle];
-        self.latest = node.previous();
-        Some((handle, node))
-    }
-}
+impl<T> DeprecatedTimelineIdDummy for T
+    where T: GenericNode
+{ }
