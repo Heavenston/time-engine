@@ -2,11 +2,9 @@ use std::{
     collections::HashMap, iter::{ empty, repeat, zip }, ops::ControlFlow, range::Range, sync::Arc
 };
 
-use parking_lot::RwLock;
 use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
 use parry2d::shape::Shape;
-use smallvec::smallvec;
 use ordered_float::OrderedFloat as OF;
 
 use crate::sg::DeprecatedTimelineIdDummy as _;
@@ -267,14 +265,14 @@ impl Simulator {
         self.snapshots.integrate(&mut &*self, handle)
     }
 
-    pub fn get_node_max_dt(&self, node: &sg::Node, timeline_id: Option<TimelineId>) -> Option<Positive> {
+    pub fn get_node_max_dt(&self, node: sg::NodeRef, timeline_id: Option<TimelineId>) -> Option<Positive> {
         node.children().iter().copied()
             .filter(|&child_handle| timeline_id.is_none_or(|timeline_id| self.multiverse.is_parent(self.snapshots[child_handle].timeline_id(), timeline_id)))
             .map(|child_handle| self.snapshots[child_handle].data.delta_age)
             .max()
     }
 
-    pub fn get_node_next_timestamp(&self, node: &sg::Node, timeline_id: TimelineId) -> Option<Timestamp> {
+    pub fn get_node_next_timestamp(&self, node: sg::NodeRef, timeline_id: TimelineId) -> Option<Timestamp> {
         node.children().iter().copied()
             .filter(|&child_handle| self.multiverse.is_parent(self.snapshots[child_handle].timeline_id(), timeline_id))
             .map(|child_handle| self.snapshots[child_handle].data.new_timestamp)
@@ -284,7 +282,7 @@ impl Simulator {
     /// Uses this node's children to find the duration for which it is valid
     #[deprecated]
     pub fn time_filtered_integrate(&self, handle: sg::NodeHandle, query_time: f32) -> impl Iterator<Item = sg::Snapshot> {
-        let max_dt = self.get_node_max_dt(&self.snapshots[handle], None);
+        let max_dt = self.get_node_max_dt(self.snapshots.get(handle), None);
         let snaps = self.integrate(handle);
         (0..snaps.len()).into_iter()
             .filter_map(move |i| {
@@ -296,7 +294,7 @@ impl Simulator {
     }
 
     pub fn timestamp_filtered_integrate(&self, handle: sg::NodeHandle, timeline_id: TimelineId, timestamp: Timestamp) -> impl Iterator<Item = sg::Snapshot> {
-        let next_ts = self.get_node_next_timestamp(&self.snapshots[handle], timeline_id);
+        let next_ts = self.get_node_next_timestamp(self.snapshots.get(handle), timeline_id);
         let snaps = self.integrate(handle);
         (0..snaps.len()).into_iter()
             .filter_map(move |i| {
@@ -309,7 +307,10 @@ impl Simulator {
     pub fn time_query(&self, query_time: f32) -> impl Iterator<Item = sg::Snapshot> {
         debug_assert!(self.starts.iter().copied().all_unique());
 
-        self.snapshots.nodes().flat_map(move |(handle, _)| self.time_filtered_integrate(handle, query_time))
+        self.snapshots.nodes()
+            .flat_map(move |node|
+                self.time_filtered_integrate(node.handle(), query_time)
+            )
     }
 
     /// Return an iterator of all nodes that are in the given timeline

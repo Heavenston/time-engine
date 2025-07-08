@@ -335,9 +335,11 @@ impl dg::DeltaGraphDataType for SnapgraphDataType {
 }
 
 pub type SnapshotGraph = dg::DeltaGraph<SnapgraphDataType>;
-pub type Node = dg::Node<SnapgraphDataType>;
 pub type InnerNode = dg::InnerNode<SnapgraphDataType>;
 pub type RootNode = dg::RootNode<SnapgraphDataType>;
+pub type RootNodeRef<'a> = dg::RootNodeRef<'a, SnapgraphDataType>;
+pub type InnerNodeRef<'a> = dg::InnerNodeRef<'a, SnapgraphDataType>;
+pub type NodeRef<'a> = dg::NodeRef<'a, SnapgraphDataType>;
 
 // TEMP: TODO: REMOVE
 pub trait DeprecatedTimelineIdDummy {

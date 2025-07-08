@@ -1,9 +1,9 @@
-use crate::{ default, AutoSmallVec };
+use crate::AutoSmallVec;
 
-use std::{ fmt::{ Debug, Display }, ops::{ Deref, DerefMut, Index }, sync::Arc };
+use std::{ fmt::Debug, ops::{ Deref, Index }, sync::Arc };
 
 use parking_lot::RwLock;
-use itertools::Itertools;
+use itertools::{ Itertools, chain };
 
 #[cfg(debug_assertions)]
 mod graph_id {
@@ -33,6 +33,220 @@ mod graph_id {
 }
 use graph_id::*;
 
+mod node_handle {
+    use super::GraphId;
+
+    use std::fmt::{ Debug, Display };
+
+    /// Bitmask to extract the actual index from the handle value
+    const IDX_MASK: usize = !0 >> 1;
+    /// If this bit is set to 1 then the node is an inner node
+    const INNER_BIT: usize = !IDX_MASK;
+
+    #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+    pub struct NodeHandle {
+        graph_id: GraphId,
+        value: usize,
+    }
+
+    impl NodeHandle {
+        pub fn idx(self) -> usize {
+            self.value & IDX_MASK
+        }
+
+        pub(super) fn graph_id(self) -> GraphId {
+            self.graph_id
+        }
+
+        pub fn is_inner(self) -> bool {
+            (self.value & INNER_BIT) != 0
+        }
+
+        pub fn is_root(self) -> bool {
+            !self.is_inner()
+        }
+
+        pub fn either(self) -> EitherHandle {
+            self.into()
+        }
+    }
+
+    impl PartialOrd for NodeHandle {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            if self.graph_id != other.graph_id {
+                return None;
+            }
+
+            // This should place inner nodes after root nodes
+            self.value.partial_cmp(&other.value)
+        }
+    }
+
+    impl Display for NodeHandle {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.idx())?;
+            if self.is_inner() {
+                write!(f, "i")?;
+            }
+            else /* self.is_root() */ {
+                write!(f, "r")?;
+            }
+
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+    pub struct RootNodeHandle {
+        handle: NodeHandle,
+    }
+
+    impl RootNodeHandle {
+        pub(super) fn new(graph_id: GraphId, idx: usize) -> Self {
+            assert_eq!(idx, idx & IDX_MASK, "Index overflow!");
+            Self {
+                handle: NodeHandle {
+                    graph_id,
+                    value: idx,
+                },
+            }
+        }
+
+        pub fn idx(self) -> usize {
+            self.handle.idx()
+        }
+    }
+
+    impl PartialOrd for RootNodeHandle {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            self.handle.partial_cmp(&other.handle)
+        }
+    }
+
+    impl Display for RootNodeHandle {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.handle)
+        }
+    }
+
+    impl From<RootNodeHandle> for NodeHandle {
+        fn from(val: RootNodeHandle) -> Self {
+            val.handle
+        }
+    }
+
+    impl TryFrom<NodeHandle> for RootNodeHandle {
+        type Error = ();
+
+        fn try_from(handle: NodeHandle) -> Result<Self, Self::Error> {
+            if handle.is_root() {
+                Ok(Self { handle })
+            }
+            else {
+                Err(())
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+    pub struct InnerNodeHandle {
+        handle: NodeHandle,
+    }
+
+    impl InnerNodeHandle {
+        pub(super) fn new(graph_id: GraphId, idx: usize) -> Self {
+            assert_eq!(idx, idx & IDX_MASK, "Index overflow!");
+            Self {
+                handle: NodeHandle {
+                    graph_id,
+                    value: idx | INNER_BIT,
+                },
+            }
+        }
+
+        pub fn idx(self) -> usize {
+            self.handle.idx()
+        }
+    }
+
+    impl PartialOrd for InnerNodeHandle {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            self.handle.partial_cmp(&other.handle)
+        }
+    }
+
+    impl Display for InnerNodeHandle {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.handle)
+        }
+    }
+
+    impl From<InnerNodeHandle> for NodeHandle {
+        fn from(val: InnerNodeHandle) -> Self {
+            val.handle
+        }
+    }
+
+    impl TryFrom<NodeHandle> for InnerNodeHandle {
+        type Error = ();
+
+        fn try_from(handle: NodeHandle) -> Result<Self, Self::Error> {
+            if handle.is_inner() {
+                Ok(Self { handle })
+            }
+            else {
+                Err(())
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+    pub enum EitherHandle {
+        Root(RootNodeHandle),
+        Inner(InnerNodeHandle),
+    }
+    
+    impl EitherHandle {
+        pub fn as_root(self) -> Option<RootNodeHandle> {
+            match self {
+                Self::Root(handle) => Some(handle),
+                _ => None,
+            }
+        }
+
+        pub fn as_inner(self) -> Option<InnerNodeHandle> {
+            match self {
+                Self::Inner(handle) => Some(handle),
+                _ => None,
+            }
+        }
+    }
+
+    impl From<NodeHandle> for EitherHandle {
+        fn from(handle: NodeHandle) -> Self {
+            if handle.is_root() {
+                EitherHandle::Root(RootNodeHandle { handle })
+            }
+            else /* self.is_inner() */ {
+                EitherHandle::Inner(InnerNodeHandle { handle })
+            }
+        }
+    }
+
+    impl From<RootNodeHandle> for EitherHandle {
+        fn from(handle: RootNodeHandle) -> Self {
+            EitherHandle::Root(handle)
+        }
+    }
+
+    impl From<InnerNodeHandle> for EitherHandle {
+        fn from(handle: InnerNodeHandle) -> Self {
+            EitherHandle::Inner(handle)
+        }
+    }
+}
+pub use node_handle::*;
+
 pub trait DeltaGraphDataType: Sized + 'static {
     type RootData: Clone + Debug + 'static;
     type PartialData: Clone + Debug + 'static;
@@ -41,90 +255,6 @@ pub trait DeltaGraphDataType: Sized + 'static {
 
     fn integrate_root(ctx: &mut Self::Ctx<'_>, graph: &DeltaGraph<Self>, handle: RootNodeHandle, root: &Self::RootData) -> Arc<Self::IntegratedData>;
     fn integrate_partial(ctx: &mut Self::Ctx<'_>, graph: &DeltaGraph<Self>, handle: InnerNodeHandle, running: &Self::IntegratedData, partial: &Self::PartialData) -> Arc<Self::IntegratedData>;
-}
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct NodeHandle {
-    graph_id: GraphId,
-    idx: usize,
-}
-
-impl PartialOrd for NodeHandle {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        if self.graph_id != other.graph_id {
-            return None;
-        }
-
-        self.idx.partial_cmp(&other.idx)
-    }
-}
-
-impl Display for NodeHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.idx)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct RootNodeHandle {
-    graph_id: GraphId,
-    idx: usize,
-}
-
-impl PartialOrd for RootNodeHandle {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        if self.graph_id != other.graph_id {
-            return None;
-        }
-
-        self.idx.partial_cmp(&other.idx)
-    }
-}
-
-impl Display for RootNodeHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.idx)
-    }
-}
-
-impl From<RootNodeHandle> for NodeHandle {
-    fn from(val: RootNodeHandle) -> Self {
-        NodeHandle {
-            graph_id: val.graph_id,
-            idx: val.idx,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct InnerNodeHandle {
-    graph_id: GraphId,
-    idx: usize,
-}
-
-impl PartialOrd for InnerNodeHandle {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        if self.graph_id != other.graph_id {
-            return None;
-        }
-
-        self.idx.partial_cmp(&other.idx)
-    }
-}
-
-impl Display for InnerNodeHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.idx)
-    }
-}
-
-impl From<InnerNodeHandle> for NodeHandle {
-    fn from(val: InnerNodeHandle) -> Self {
-        NodeHandle {
-            graph_id: val.graph_id,
-            idx: val.idx,
-        }
-    }
 }
 
 pub trait GenericNode {
@@ -174,105 +304,160 @@ impl<D: DeltaGraphDataType> GenericNode for InnerNode<D> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum Node<D: DeltaGraphDataType> {
-    Root(RootNode<D>),
-    Inner(InnerNode<D>),
+#[derive(Debug, Clone, Copy)]
+pub struct RootNodeRef<'a, D: DeltaGraphDataType> {
+    root_node: &'a RootNode<D>,
+    root_handle: RootNodeHandle,
 }
 
-impl<D: DeltaGraphDataType> Deref for Node<D> {
+impl<'a, D: DeltaGraphDataType> Deref for RootNodeRef<'a, D> {
+    type Target = RootNode<D>;
+
+    fn deref(&self) -> &Self::Target {
+        self.root_node
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct InnerNodeRef<'a, D: DeltaGraphDataType> {
+    inner_node: &'a InnerNode<D>,
+    inner_handle: InnerNodeHandle,
+}
+
+impl<'a, D: DeltaGraphDataType> Deref for InnerNodeRef<'a, D> {
+    type Target = InnerNode<D>;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner_node
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum NodeRef<'a, D: DeltaGraphDataType> {
+    Root(RootNodeRef<'a, D>),
+    Inner(InnerNodeRef<'a, D>),
+}
+
+impl<'a, D: DeltaGraphDataType> NodeRef<'a, D> {
+    pub fn handle(&self) -> NodeHandle {
+        match self {
+            NodeRef::Root(ref_) => ref_.root_handle.into(),
+            NodeRef::Inner(ref_) => ref_.inner_handle.into(),
+        }
+    }
+}
+
+impl<'a, D: DeltaGraphDataType> Deref for NodeRef<'a, D> {
     type Target = dyn GenericNode;
 
     fn deref(&self) -> &Self::Target {
         match self {
-            Node::Root(node) => node,
-            Node::Inner(node) => node,
+            NodeRef::Root(ref_) => ref_.root_node,
+            NodeRef::Inner(ref_) => ref_.inner_node,
         }
     }
 }
 
-impl<D: DeltaGraphDataType> DerefMut for Node<D> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            Node::Root(node) => node,
-            Node::Inner(node) => node,
+mod node_cache {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct DenseNodeCache<T> {
+        root_values: Vec<Option<T>>,
+        inner_values: Vec<Option<T>>,
+    }
+
+    impl<T> DenseNodeCache<T> {
+        pub fn new() -> Self {
+            Self {
+                root_values: vec![],
+                inner_values: vec![],
+            }
+        }
+
+        fn array_of(&self, handle: NodeHandle) -> &Vec<Option<T>> {
+            if handle.is_root() {
+                &self.root_values
+            }
+            else /* handle.is_inner() */ {
+                &self.inner_values
+            }
+        }
+
+        fn array_of_mut(&mut self, handle: NodeHandle) -> &mut Vec<Option<T>> {
+            if handle.is_root() {
+                &mut self.root_values
+            }
+            else /* handle.is_inner() */ {
+                &mut self.inner_values
+            }
+        }
+
+        pub fn get(&self, handle: NodeHandle) -> Option<&T> {
+            let array = self.array_of(handle);
+            array.get(handle.idx()).map(Option::as_ref).flatten()
+        }
+
+        pub fn set(&mut self, handle: NodeHandle, value: T) -> &T {
+            let array = self.array_of_mut(handle);
+            if array.len() <= handle.idx() {
+                array.resize_with(handle.idx() + 1, || None);
+            }
+
+            array[handle.idx()] = Some(value);
+            array[handle.idx()].as_ref().expect("Present")
+        }
+    }
+
+    impl<T> Default for DenseNodeCache<T> {
+        fn default() -> Self {
+            Self::new()
         }
     }
 }
-
-impl<D: DeltaGraphDataType> From<RootNode<D>> for Node<D> {
-    fn from(root: RootNode<D>) -> Self {
-        Self::Root(root)
-    }
-}
-
-impl<D: DeltaGraphDataType> From<InnerNode<D>> for Node<D> {
-    fn from(inner: InnerNode<D>) -> Self {
-        Self::Inner(inner)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum NodeRef<'a, D: DeltaGraphDataType> {
-    Root {
-        root_node: &'a RootNode<D>,
-        root_handle: RootNodeHandle,
-    },
-    Inner {
-        inner_node: &'a InnerNode<D>,
-        inner_handle: InnerNodeHandle,
-    },
-}
+pub use node_cache::*;
 
 #[derive(Debug)]
 pub struct DeltaGraph<D: DeltaGraphDataType> {
     id: GraphId,
-    nodes: Vec<Node<D>>,
+    root_nodes: Vec<RootNode<D>>,
+    inner_nodes: Vec<InnerNode<D>>,
     /// Used to efficiently provide the list of all leafs
     /// assumed to be pretty small
     leafs: Vec<NodeHandle>,
     /// Used to cache the integrated version of all nodes
     /// should be pretty dense (nodes quickly get integrated)
-    integration_cache: RwLock<Vec<Option<Arc<D::IntegratedData>>>>,
+    integration_cache: RwLock<DenseNodeCache<Arc<D::IntegratedData>>>,
 }
 
 impl<D: DeltaGraphDataType> DeltaGraph<D> {
     pub fn new() -> Self {
         Self {
             id: GraphId::new(),
-            nodes: default(),
+            root_nodes: vec![],
+            inner_nodes: vec![],
             leafs: vec![],
-            integration_cache: RwLock::new(vec![]),
-        }
-    }
-
-    fn handle(&self, idx: usize) -> NodeHandle {
-        NodeHandle {
-            idx,
-            graph_id: self.id,
+            integration_cache: RwLock::new(DenseNodeCache::new()),
         }
     }
 
     fn root_handle(&self, idx: usize) -> RootNodeHandle {
-        debug_assert!(matches!(self.nodes[idx], Node::Root(..)));
-        RootNodeHandle {
-            idx,
-            graph_id: self.id,
-        }
+        RootNodeHandle::new(self.id, idx)
     }
 
     fn inner_handle(&self, idx: usize) -> InnerNodeHandle {
-        debug_assert!(matches!(self.nodes[idx], Node::Inner(..)));
-        InnerNodeHandle {
-            idx,
-            graph_id: self.id,
-        }
+        InnerNodeHandle::new(self.id, idx)
     }
 
     #[cfg(debug_assertions)]
     fn assert_handle(&self, handle: NodeHandle) {
-        debug_assert_eq!(handle.graph_id, self.id, "Using handles from another graph");
-        debug_assert!(handle.idx < self.nodes.len(), "Should be impossible (expept by cloning the graph...)");
+        debug_assert_eq!(handle.graph_id(), self.id, "Using handles from another graph");
+        if handle.is_root() {
+            debug_assert!(handle.idx() < self.root_nodes.len(), "Should be impossible (expept by cloning the graph...)");
+        }
+        else {
+            debug_assert!(handle.idx() < self.inner_nodes.len(), "Should be impossible (expept by cloning the graph...)");
+        }
     }
 
     #[cfg(not(debug_assertions))]
@@ -280,15 +465,29 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
 
     pub fn get(&self, handle: NodeHandle) -> NodeRef<'_, D> {
         self.assert_handle(handle);
-        match &self.nodes[handle.idx] {
-            Node::Root(root_node) => NodeRef::Root {
-                root_node,
-                root_handle: self.root_handle(handle.idx),
+        match handle.either() {
+            EitherHandle::Root(root_handle) => {
+                NodeRef::Root(RootNodeRef {
+                    root_node: &self.root_nodes[handle.idx()],
+                    root_handle,
+                })
             },
-            Node::Inner(inner_node) => NodeRef::Inner {
-                inner_node,
-                inner_handle: self.inner_handle(handle.idx),
+            EitherHandle::Inner(inner_handle) => {
+                NodeRef::Inner(InnerNodeRef {
+                    inner_node: &self.inner_nodes[handle.idx()],
+                    inner_handle,
+                })
             },
+        }
+    }
+
+    /// PRIVATE because manually mutating nodes is not part of the public api
+    fn get_mut(&mut self, handle: NodeHandle) -> &mut dyn GenericNode {
+        if handle.is_root() {
+            &mut self.root_nodes[handle.idx()]
+        }
+        else /* handle.is_inner() */ {
+            &mut self.inner_nodes[handle.idx()]
         }
     }
 
@@ -296,9 +495,28 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
         AncestryIterator::new(self, Some(handle))
     }
 
-    pub fn nodes(&self) -> impl Iterator<Item = (NodeHandle, &'_ Node<D>)> {
-        self.nodes.iter().enumerate()
-            .map(|(idx, node)| (self.handle(idx), node))
+    pub fn root_nodes(&self) -> impl Iterator<Item = RootNodeRef<'_, D>> {
+        self.root_nodes.iter().enumerate()
+            .map(|(idx, root_node)| RootNodeRef {
+                root_node,
+                root_handle: self.root_handle(idx),
+            })
+    }
+
+    pub fn inner_nodes(&self) -> impl Iterator<Item = InnerNodeRef<'_, D>> {
+        self.inner_nodes.iter().enumerate()
+            .map(|(idx, inner_node)| InnerNodeRef {
+                inner_node,
+                inner_handle: self.inner_handle(idx),
+            })
+    }
+
+    /// Iterate over all nodes, sorted by their handles
+    pub fn nodes(&self) -> impl Iterator<Item = NodeRef<'_, D>> {
+        chain(
+            self.root_nodes().map(NodeRef::Root),
+            self.inner_nodes().map(NodeRef::Inner),
+        )
     }
 
     pub fn leafs(&self) -> &[NodeHandle] {
@@ -306,11 +524,11 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
     }
 
     pub fn insert_root(&mut self, data: D::RootData) -> RootNodeHandle {
-        self.nodes.push(RootNode {
+        self.root_nodes.push(RootNode {
             data,
             children: vec![],
         }.into());
-        let handle = self.root_handle(self.nodes.len() - 1);
+        let handle = self.root_handle(self.root_nodes.len() - 1);
         self.leafs.push(handle.into());
         handle
     }
@@ -321,25 +539,17 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
             self.leafs.remove(leaf_idx);
         }
 
-        self.nodes.push(InnerNode {
+        self.inner_nodes.push(InnerNode {
             data,
             previous,
             children: vec![],
         }.into());
-        let handle = self.inner_handle(self.nodes.len()-1);
+        let handle = self.inner_handle(self.inner_nodes.len()-1);
         self.leafs.push(handle.into());
 
-        self.nodes[previous.idx].children_mut().push(handle);
+        self.get_mut(previous).children_mut().push(handle);
 
         handle
-    }
-
-    fn set_integration_cache(&self, idx: usize, val: Arc<D::IntegratedData>) {
-        let mut integration_cache = self.integration_cache.write();
-        if integration_cache.len() <= idx {
-            integration_cache.resize_with(idx + 1, || None);
-        }
-        integration_cache[idx] = Some(val);
     }
 
     pub fn integrate<'a, 'b>(&'a self, ctx: &'b mut D::Ctx<'b>, mut handle: NodeHandle) -> Arc<D::IntegratedData> {
@@ -351,22 +561,22 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
 
         // backward loop (find root/cached integrated parent)
         let mut integrated = loop {
-            if let Some(integrated) = self.integration_cache.read().get(handle.idx).map(Option::as_ref).flatten() {
+            if let Some(integrated) = self.integration_cache.read().get(handle) {
                 break Arc::clone(integrated);
             }
 
             handle = match self.get(handle) {
-                NodeRef::Root { root_node, root_handle } => {
+                NodeRef::Root(RootNodeRef { root_node, root_handle }) => {
                     let integrated = D::integrate_root(
                         ctx,
                         self,
                         root_handle,
                         &root_node.data,
                     );
-                    self.set_integration_cache(handle.idx, Arc::clone(&integrated));
+                    self.integration_cache.write().set(handle, Arc::clone(&integrated));
                     break integrated;
                 },
-                NodeRef::Inner { inner_node, inner_handle } => {
+                NodeRef::Inner(InnerNodeRef { inner_node, inner_handle }) => {
                     stack.push(inner_handle);
                     inner_node.previous
                 },
@@ -383,7 +593,8 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
                 &*integrated,
                 &inner_node.data
             );
-            self.set_integration_cache(current_handle.idx, Arc::clone(&integrated));
+            self.integration_cache.write()
+                .set(current_handle.into(), Arc::clone(&integrated));
         }
 
         integrated
@@ -401,12 +612,18 @@ impl<'a, D: DeltaGraphDataType, I> Index<&'a I> for DeltaGraph<D>
     }
 }
 
+/// Returns a trait object because we cannot return a &NodeRef with the Index trait
 impl<D: DeltaGraphDataType> Index<NodeHandle> for DeltaGraph<D> {
-    type Output = Node<D>;
+    type Output = dyn GenericNode;
 
     fn index(&self, handle: NodeHandle) -> &Self::Output {
         self.assert_handle(handle);
-        &self.nodes[handle.idx]
+        if handle.is_root() {
+            &self.root_nodes[handle.idx()]
+        }
+        else /* handle.is_inner() */ {
+            &self.inner_nodes[handle.idx()]
+        }
     }
 }
 
@@ -414,10 +631,8 @@ impl<D: DeltaGraphDataType> Index<RootNodeHandle> for DeltaGraph<D> {
     type Output = RootNode<D>;
 
     fn index(&self, handle: RootNodeHandle) -> &Self::Output {
-        match &self[NodeHandle::from(handle)] {
-            Node::Root(root_node) => root_node,
-            Node::Inner(_) => unreachable!(),
-        }
+        self.assert_handle(handle.into());
+        &self.root_nodes[handle.idx()]
     }
 }
 
@@ -425,10 +640,8 @@ impl<D: DeltaGraphDataType> Index<InnerNodeHandle> for DeltaGraph<D> {
     type Output = InnerNode<D>;
 
     fn index(&self, handle: InnerNodeHandle) -> &Self::Output {
-        match &self[NodeHandle::from(handle)] {
-            Node::Inner(inner_node) => inner_node,
-            Node::Root(_) => unreachable!(),
-        }
+        self.assert_handle(handle.into());
+        &self.inner_nodes[handle.idx()]
     }
 }
 
@@ -453,12 +666,12 @@ impl<'a, D: DeltaGraphDataType> AncestryIterator<'a, D> {
 }
 
 impl<'a, D: DeltaGraphDataType> Iterator for AncestryIterator<'a, D> {
-    type Item = (NodeHandle, &'a Node<D>);
+    type Item = NodeRef<'a, D>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let handle = self.latest?;
-        let node = &self.graph[handle];
-        self.latest = node.previous();
-        Some((handle, node))
+        let ref_ = self.graph.get(handle);
+        self.latest = ref_.previous();
+        Some(ref_)
     }
 }

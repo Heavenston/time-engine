@@ -83,17 +83,17 @@ impl AppState {
     
     fn get_time_bounds(&self) -> (f32, f32) {
         let min_time = self.simulator.snapshots().nodes()
-            .flat_map(|(handle, _)| {
-                let snaps = self.simulator.integrate(handle);
+            .flat_map(|node| {
+                let snaps = self.simulator.integrate(node.handle());
                 (0..snaps.len())
                     .map(move |i| snaps[i].time)
             })
             .min_by_key(|&t| OF(t))
             .unwrap_or(0.);
         let max_time = self.simulator.snapshots().nodes()
-            .filter(|(_, node)| node.children().is_empty())
-            .flat_map(|(handle, _)| {
-                let snaps = self.simulator.integrate(handle);
+            .filter(|node| node.children().is_empty())
+            .flat_map(|node| {
+                let snaps = self.simulator.integrate(node.handle());
                 (0..snaps.len())
                     .map(move |i| snaps[i].time)
             })
@@ -400,8 +400,8 @@ impl AppState {
                 ui.label(format!("Current time: {:?}", self.time));
                 ui.separator();
                 let str = self.simulator.snapshots().nodes()
-                    .flat_map(|(handle, _)| {
-                        let snaps = self.simulator.integrate(handle);
+                    .flat_map(|node| {
+                        let snaps = self.simulator.integrate(node.handle());
                         (0..snaps.len())
                             .map(move |i| snaps[i].time)
                     })
