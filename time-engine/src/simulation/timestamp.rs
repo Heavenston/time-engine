@@ -18,14 +18,6 @@ impl Timestamp {
         self.idx.try_into().expect("No overflow")
     }
 
-    fn from_idx(idx: usize, list_id: u64) -> Self {
-        Self {
-            #[cfg(debug_assertions)]
-            list_id,
-            idx: idx.try_into().expect("No overflow"),
-        }
-    }
-
     fn next(self) -> Self {
         Self {
             #[cfg(debug_assertions)]
@@ -67,9 +59,17 @@ impl TimestampList {
         }
     }
 
+    fn from_idx(&self, idx: usize) -> Timestamp {
+        Timestamp {
+            #[cfg(debug_assertions)]
+            list_id: self.id,
+            idx: idx.try_into().expect("no overflow"),
+        }
+    }
+
     pub fn first_timestamp(&self) -> Timestamp {
         assert!(self.datas.len() > 0);
-        Timestamp::from_idx(0, self.id)
+        self.from_idx(0)
     }
 
     pub fn first(&self) -> &TimestampData {
@@ -95,7 +95,7 @@ impl TimestampList {
 
     pub fn iter(&self) -> impl Iterator<Item = (Timestamp, &'_ TimestampData)> {
         (0..self.len()).into_iter()
-            .map(|idx| (Timestamp::from_idx(idx, self.id), &self.datas[idx]))
+            .map(|idx| (self.from_idx(idx), &self.datas[idx]))
     }
 
     pub fn push(&mut self, delta: TimestampDelta) -> Timestamp {
