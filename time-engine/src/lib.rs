@@ -24,6 +24,8 @@ mod conversions;
 pub(crate) use conversions::*;
 mod time_range;
 pub use time_range::*;
+pub mod delta_graph;
+pub(crate) use delta_graph as dg;
 
 use std::range::RangeBounds;
 
