@@ -5,6 +5,8 @@
 #![feature(new_range)]
 #![feature(option_zip)]
 #![feature(range_bounds_is_empty)]
+#![feature(trait_alias)]
+#![feature(associated_type_defaults)]
 
 #![expect(incomplete_features)]
 #![expect(dead_code)]

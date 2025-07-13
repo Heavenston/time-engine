@@ -1,3 +1,5 @@
+#![deprecated]
+
 use std::ops::Index;
 use std::sync::atomic::AtomicU64;
 
@@ -6,7 +8,7 @@ use super::*;
 #[cfg(debug_assertions)]
 static TIMESTAMP_LIST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Timestamp {
     #[cfg(debug_assertions)]
     list_id: u64,

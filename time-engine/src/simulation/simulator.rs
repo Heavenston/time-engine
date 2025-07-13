@@ -1,9 +1,9 @@
 use std::{
-    collections::HashMap, iter::{ empty, repeat, zip }, ops::ControlFlow, range::Range, sync::Arc
+    collections::HashMap, iter::{ empty, once, repeat, zip }, ops::ControlFlow, range::Range, sync::Arc
 };
 
 use glam::{ Affine2, Vec2 };
-use itertools::Itertools;
+use itertools::{chain, Itertools};
 use parry2d::shape::Shape;
 use ordered_float::OrderedFloat as OF;
 
@@ -43,30 +43,36 @@ struct CollisionSimulationEvent<'a, const N: usize> {
 }
 
 impl<'a, const N: usize> CollisionSimulationEvent<'a, N> {
-    fn child_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
-        assert!(N > 0);
-        debug_assert!(
-            self.snaps.iter().map(|snap| snap.timeline_id)
-                .tuple_windows::<(_, _)>()
-                .all(|(a, b)| multiverse.is_related(a, b))
-        );
-        self.snaps.iter()
-            .map(|snap| snap.timeline_id)
-            .max()
-            .expect("No empty")
+    #[deprecated]
+    #[expect(deprecated)]
+    fn child_timeline(&self, _multiverse: &TimelineMultiverse) -> TimelineId {
+        unimplemented!()
+        // assert!(N > 0);
+        // debug_assert!(
+        //     self.snaps.iter().map(|snap| snap.timeline_id)
+        //         .tuple_windows::<(_, _)>()
+        //         .all(|(a, b)| multiverse.is_related(a, b))
+        // );
+        // self.snaps.iter()
+        //     .map(|snap| snap.timeline_id)
+        //     .max()
+        //     .expect("No empty")
     }
 
-    fn parent_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
-        assert!(N > 0);
-        debug_assert!(
-            self.snaps.iter().map(|snap| snap.timeline_id)
-                .tuple_windows::<(_, _)>()
-                .all(|(a, b)| multiverse.is_related(a, b))
-        );
-        self.snaps.iter()
-            .map(|snap| snap.timeline_id)
-            .min()
-            .expect("No empty")
+    #[deprecated]
+    #[expect(deprecated)]
+    fn parent_timeline(&self, _multiverse: &TimelineMultiverse) -> TimelineId {
+        unimplemented!()
+        // assert!(N > 0);
+        // debug_assert!(
+        //     self.snaps.iter().map(|snap| snap.timeline_id)
+        //         .tuple_windows::<(_, _)>()
+        //         .all(|(a, b)| multiverse.is_related(a, b))
+        // );
+        // self.snaps.iter()
+        //     .map(|snap| snap.timeline_id)
+        //     .min()
+        //     .expect("No empty")
     }
 }
 
@@ -141,22 +147,28 @@ impl<'a> GenericSimulationEventInfo<'a> {
         }
     }
 
-    fn child_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
-        match self {
-            Self::OneCollision(event) => event.child_timeline(multiverse),
-            Self::TwoCollision(event) => event.child_timeline(multiverse),
-            Self::PortalTraversal(event) => event.snap.timeline_id,
-            Self::Ghostification(event) => event.snap.timeline_id,
-        }
+    #[deprecated]
+    #[expect(deprecated)]
+    fn child_timeline(&self, _multiverse: &TimelineMultiverse) -> TimelineId {
+        unimplemented!()
+        // match self {
+        //     Self::OneCollision(event) => event.child_timeline(multiverse),
+        //     Self::TwoCollision(event) => event.child_timeline(multiverse),
+        //     Self::PortalTraversal(event) => event.snap.timeline_id,
+        //     Self::Ghostification(event) => event.snap.timeline_id,
+        // }
     }
 
-    fn parent_timeline(&self, multiverse: &TimelineMultiverse) -> TimelineId {
-        match self {
-            Self::OneCollision(event) => event.parent_timeline(multiverse),
-            Self::TwoCollision(event) => event.parent_timeline(multiverse),
-            Self::PortalTraversal(event) => event.snap.timeline_id,
-            Self::Ghostification(event) => event.snap.timeline_id,
-        }
+    #[deprecated]
+    #[expect(deprecated)]
+    fn parent_timeline(&self, _multiverse: &TimelineMultiverse) -> TimelineId {
+        unimplemented!()
+        // match self {
+        //     Self::OneCollision(event) => event.parent_timeline(multiverse),
+        //     Self::TwoCollision(event) => event.parent_timeline(multiverse),
+        //     Self::PortalTraversal(event) => event.snap.timeline_id,
+        //     Self::Ghostification(event) => event.snap.timeline_id,
+        // }
     }
 }
 
@@ -174,14 +186,15 @@ struct PortalTraversalCheckResult {
 #[derive(Debug)]
 pub struct Simulator {
     pub(super) world_state: Arc<WorldState>,
-    pub(super) multiverse: TimelineMultiverse,
     pub(super) snapshots: sg::SnapshotGraph,
+    pub(super) timestamps: tsg::TimestampGraph,
+
+    pub(super) initial_timestamp: tsg::Timestamp,
 
     /// The first snapshot of all balls
+    #[deprecated]
     pub(super) starts: Ro<Box<[sg::RootNodeHandle]>>,
     pub(super) half_portals: Vec<HalfPortal>,
-
-    pub(super) timeline_timestamps: HashMap<TimelineId, TimestampList>,
 
     /// Cannot be changed without recomputing everything, i think
     pub(super) max_time: Ro<f32>,
@@ -189,10 +202,8 @@ pub struct Simulator {
 
 impl Simulator {
     pub fn new(world_state: Arc<WorldState>, max_time: f32) -> Self {
-        let multiverse = TimelineMultiverse::new();
-
         let mut snapshots = sg::SnapshotGraph::new();
-        let starts = world_state.balls.iter()
+        world_state.balls.iter()
             .enumerate()
             .map(|(object_id, ball)| sg::RootSnapshot {
                 object_id,
@@ -203,8 +214,9 @@ impl Simulator {
                 linvel: ball.initial_velocity,
                 angvel: 0.,
             })
-            .map(|snapshot| snapshots.insert_root(snapshot))
-            .collect_vec();
+            .for_each(|snapshot| {
+                snapshots.insert_root(&mut (), snapshot);
+            });
 
         let mut half_portals = Vec::<HalfPortal>::new();
         for &portal in &world_state.portals {
@@ -222,19 +234,23 @@ impl Simulator {
             });
         }
 
-        let timeline_timestamps = [
-            (multiverse.root(), TimestampList::new())
-        ].into();
+        let mut timestamps = tsg::TimestampGraph::new();
+
+        let initial_timestamp = timestamps.insert_root(
+            &mut (),
+            tsg::TimestampRoot { time: 0. }
+        ).into();
 
         Self {
             world_state,
-            multiverse,
             snapshots,
+            timestamps: tsg::TimestampGraph::new(),
 
-            starts: starts.clone().into_boxed_slice().into(),
+            initial_timestamp,
+
+            #[expect(deprecated)]
+            starts: Ro::new(default()),
             half_portals,
-
-            timeline_timestamps,
 
             max_time: Ro::new(max_time),
         }
@@ -248,8 +264,10 @@ impl Simulator {
         &self.snapshots
     }
 
+    #[deprecated]
+    #[expect(deprecated)]
     pub fn multiverse(&self) -> &TimelineMultiverse {
-        &self.multiverse
+        unimplemented!()
     }
 
     pub fn half_portals(&self) -> &[HalfPortal] {
@@ -261,47 +279,59 @@ impl Simulator {
         *self.max_time
     }
 
-    pub fn integrate(&self, handle: sg::NodeHandle) -> Arc<[sg::Snapshot]> {
+    pub fn integrate_snapshot(&self, handle: sg::NodeHandle) -> Arc<[sg::Snapshot]> {
         self.snapshots.integrate(&mut &*self, handle)
     }
 
+    pub fn integrate_timestamp(&self, timestamp: tsg::Timestamp) -> Arc<tsg::TimestampData> {
+        self.timestamps.integrate(&mut (), timestamp)
+    }
+
+    #[deprecated]
+    #[expect(deprecated)]
     pub fn get_node_max_dt(&self, node: sg::NodeRef, timeline_id: Option<TimelineId>) -> Option<Positive> {
         node.children().iter().copied()
-            .filter(|&child_handle| timeline_id.is_none_or(|timeline_id| self.multiverse.is_parent(self.snapshots[child_handle].timeline_id(), timeline_id)))
+            .filter(|&child_handle| timeline_id.is_none_or(|timeline_id| self.multiverse().is_parent(self.snapshots[child_handle].timeline_id(), timeline_id)))
             .map(|child_handle| self.snapshots[child_handle].data.delta_age)
             .max()
     }
 
-    pub fn get_node_next_timestamp(&self, node: sg::NodeRef, timeline_id: TimelineId) -> Option<Timestamp> {
-        node.children().iter().copied()
-            .filter(|&child_handle| self.multiverse.is_parent(self.snapshots[child_handle].timeline_id(), timeline_id))
-            .map(|child_handle| self.snapshots[child_handle].data.new_timestamp)
-            .at_most_one().expect("Cannot be two children for the same timeline id")
+    #[deprecated]
+    #[expect(deprecated)]
+    pub fn get_node_next_timestamp(&self, _node: sg::NodeRef, _timeline_id: TimelineId) -> Option<Timestamp> {
+        unimplemented!()
     }
 
     /// Uses this node's children to find the duration for which it is valid
     #[deprecated]
-    pub fn time_filtered_integrate(&self, handle: sg::NodeHandle, query_time: f32) -> impl Iterator<Item = sg::Snapshot> {
-        let max_dt = self.get_node_max_dt(self.snapshots.get(handle), None);
-        let snaps = self.integrate(handle);
-        (0..snaps.len()).into_iter()
-            .filter_map(move |i| {
-                let snap = &snaps[i];
-                TimeRange::new(Some(snap.time), max_dt.map(|dt| snap.time + dt.get()))
-                    .contains(&query_time)
-                    .then(|| snap.clone())
-            })
+    #[expect(deprecated)]
+    pub fn time_filtered_integrate(&self, _handle: sg::NodeHandle, _query_time: f32) -> impl Iterator<Item = sg::Snapshot> {
+        unimplemented!();
+        empty()
+        // let max_dt = self.get_node_max_dt(self.snapshots.get(handle), None);
+        // let snaps = self.integrate_snapshot(handle);
+        // (0..snaps.len()).into_iter()
+        //     .filter_map(move |i| {
+        //         let snap = &snaps[i];
+        //         TimeRange::new(Some(snap.time), max_dt.map(|dt| snap.time + dt.get()))
+        //             .contains(&query_time)
+        //             .then(|| snap.clone())
+        //     })
     }
 
-    pub fn timestamp_filtered_integrate(&self, handle: sg::NodeHandle, timeline_id: TimelineId, timestamp: Timestamp) -> impl Iterator<Item = sg::Snapshot> {
-        let next_ts = self.get_node_next_timestamp(self.snapshots.get(handle), timeline_id);
-        let snaps = self.integrate(handle);
-        (0..snaps.len()).into_iter()
-            .filter_map(move |i| {
-                let snap = &snaps[i];
-                (snap.timestamp <= timestamp && next_ts.is_none_or(|next_ts| timestamp < next_ts))
-                    .then(|| snap.clone())
-            })
+    #[deprecated]
+    #[expect(deprecated)]
+    pub fn timestamp_filtered_integrate(&self, _handle: sg::NodeHandle, _timeline_id: TimelineId, _timestamp: Timestamp) -> impl Iterator<Item = sg::Snapshot> {
+        unimplemented!();
+        empty()
+        // let next_ts = self.get_node_next_timestamp(self.snapshots.get(handle), timeline_id);
+        // let snaps = self.integrate_snapshot(handle);
+        // (0..snaps.len()).into_iter()
+        //     .filter_map(move |i| {
+        //         let snap = &snaps[i];
+        //         (snap.timestamp_old <= timestamp && next_ts.is_none_or(|next_ts| timestamp < next_ts))
+        //             .then(|| snap.clone())
+        //     })
     }
 
     pub fn time_query(&self, query_time: f32) -> impl Iterator<Item = sg::Snapshot> {
@@ -314,6 +344,8 @@ impl Simulator {
     }
 
     /// Return an iterator of all nodes that are in the given timeline
+    #[deprecated]
+    #[expect(deprecated)]
     pub fn timeline_query(&self, timeline_id: TimelineId) -> impl Iterator<Item = sg::NodeHandle> + Clone + '_ {
         #[derive(Debug, Clone, Copy)]
         struct StackEntry {
@@ -322,7 +354,7 @@ impl Simulator {
         }
 
         let mut stack = self.starts.iter().copied()
-            .inspect(|&link| debug_assert_eq!(self.snapshots[link].timeline_id(), self.multiverse.root()))
+            .inspect(|&link| debug_assert_eq!(self.snapshots[link].timeline_id(), self.multiverse().root()))
             .map(|handle| StackEntry {
                 handle: handle.into(),
                 // Necessarily true as handle is a root
@@ -341,7 +373,7 @@ impl Simulator {
                 if is_in_timeline {
                     let children = node.children().iter().copied()
                         // take the distance of each child's timeline with the target timeline
-                        .filter_map(|child_handle| self.multiverse.distance(self.snapshots[child_handle].timeline_id(), timeline_id)
+                        .filter_map(|child_handle| self.multiverse().distance(self.snapshots[child_handle].timeline_id(), timeline_id)
                             // checks that it is a parent
                             .and_then(|distance| (distance >= 0).then_some(distance))
                             .map(|distance| (child_handle, distance)))
@@ -363,7 +395,7 @@ impl Simulator {
                 else {
                     node.children().iter().copied()
                         .map(|child_handle| (child_handle, self.snapshots[child_handle].timeline_id()))
-                        .filter(|&(_, child_timeline_id)| self.multiverse.is_parent(child_timeline_id, timeline_id))
+                        .filter(|&(_, child_timeline_id)| self.multiverse().is_parent(child_timeline_id, timeline_id))
                         .map(|(child_handle, child_timeline_id)| StackEntry {
                             handle: child_handle.into(),
                             is_in_timeline: child_timeline_id == timeline_id
@@ -374,6 +406,68 @@ impl Simulator {
 
             None
         })
+    }
+
+    pub fn integrate_snapshot_timestamps(&self, handle: sg::NodeHandle) -> Vec<tsg::Timestamp> {
+        let ancestry = {
+            let mut ancestry = self.snapshots.iter_ancestry(handle).collect_vec();
+            ancestry.reverse();
+            ancestry
+        };
+
+        debug_assert!(ancestry[0].handle().is_root());
+
+        ancestry.iter()
+        // skip the root node that do not do anything
+        .skip(1)
+        .fold(vec![self.initial_timestamp], |mut timestamps, node| {
+            let sg::NodeRef::Inner(node) = node
+            else { unreachable!() };
+
+            let delta_t = node.data.delta_age;
+
+            timestamps.iter().copied().map(|timestamp| {
+                let next_timestamp = self.timestamps.children(timestamp)
+                    .filter(|child| child.data.delta.is_forward())
+                    .at_most_one().unwrap_or_else(|_| unreachable!("Cannot be multiple forward timestamp children"));
+            });
+            
+            timestamps
+        })
+    }
+
+    pub fn timestamp_query(&self, timestamp: tsg::Timestamp) -> impl Iterator<Item = sg::Snapshot> + Clone + '_ {
+        #[derive(Debug, Clone, Copy)]
+        struct StackEntry {
+            handle: sg::NodeHandle,
+            timestamp: tsg::Timestamp,
+        }
+
+        let mut stack = self.snapshots.root_nodes()
+            .map(|node| StackEntry {
+                handle: node.root_handle.into(),
+                timestamp: self.initial_timestamp,
+            })
+            .collect_vec();
+
+        let iter = std::iter::from_fn(move || {
+            debug_assert!(stack.iter().copied()
+                .map(|entry| (entry.handle, entry.timestamp))
+                .all_unique());
+
+            while let Some(StackEntry {
+                handle,
+                timestamp: current_timestamp,
+            }) = stack.pop() {
+                let node = self.snapshots.get(handle);
+
+            }
+
+            None::<std::iter::Empty<_>>
+        });
+
+
+        iter.flatten()
     }
 
     fn snapshot_collision_shape(&self, snap: &sg::Snapshot) -> impl parry2d::shape::Shape {
@@ -552,7 +646,8 @@ impl Simulator {
         dt_range: Range<f32>,
     ) -> Option<Collision<2>> {
         debug_assert!((s1.time - s2.time).abs() <= DEFAULT_EPSILON, "{} != {}", s1.time, s2.time);
-        debug_assert!(self.multiverse.is_related(s1.timeline_id, s2.timeline_id));
+        // TODO: Same but with timestamps
+        // debug_assert!(self.multiverse.is_related(s1.timeline_id, s2.timeline_id));
 
         let rad1 = self.world_state.balls()[s1.object_id].radius;
         let rad2 = self.world_state.balls()[s2.object_id].radius;
@@ -603,7 +698,7 @@ impl Simulator {
             })
     }
 
-    fn apply_collision<const N: usize>(&mut self, event: CollisionSimulationEvent<N>, new_timestamp: Timestamp) {
+    fn apply_collision<const N: usize>(&mut self, event: CollisionSimulationEvent<N>) {
         assert!(event.snaps.iter().map(|snap| snap.handle).all_unique(), "Self-collision of a single handle is not yet implemented");
 
         // TEMP: Maybe possible with time travel? (i think not)
@@ -616,7 +711,6 @@ impl Simulator {
             let invforcetrans = event.snaps[i].force_transform.inverse();
             let new_partial = sg::PartialSnapshot {
                 delta_age: event.snaps[i].extrapolated_by + event.col.impact_delta_time,
-                new_timestamp,
                 delta: sg::PartialSnapshotDelta::Impulse {
                     linear: invforcetrans.transform_vector2(event.col.states[i].linear_impulse) ,
                     angular: event.col.states[i].angular_impulse,
@@ -624,7 +718,7 @@ impl Simulator {
             };
 
             println!("[{}/{N}] {new_partial:?}", i + 1);
-            let n = self.snapshots.insert(new_partial, event.snaps[i].handle);
+            let n = self.snapshots.insert(&mut (), new_partial, event.snaps[i].handle);
             println!("Created handle {n}");
         }
     }
@@ -635,7 +729,6 @@ impl Simulator {
 
         let new_partial = sg::PartialSnapshot {
             delta_age: event.snap.extrapolated_by + event.data.delta_range.start,
-            new_timestamp,
             delta: sg::PartialSnapshotDelta::PortalTraversal {
                 traversal: sg::PartialPortalTraversal {
                     half_portal_idx: event.data.half_portal_idx,
@@ -648,42 +741,42 @@ impl Simulator {
             }
         };
         println!("[1/1] {new_partial:?}");
-        let n = self.snapshots.insert(new_partial, event.snap.handle);
+        let n = self.snapshots.insert(&mut (), new_partial, event.snap.handle);
         println!("Created handle {n}");
     }
 
     fn apply_ghostification(&mut self, event: GhostificationSimulationEvent, new_timestamp: Timestamp) {
         let new_partial = sg::PartialSnapshot {
             delta_age: event.snap.extrapolated_by + event.data.delta_time,
-            new_timestamp,
             delta: sg::PartialSnapshotDelta::Ghostification { sub_id: event.snap.sub_id },
         };
         println!("[1/1] {new_partial:?}");
-        let n = self.snapshots.insert(new_partial, event.snap.handle);
+        let n = self.snapshots.insert(&mut (), new_partial, event.snap.handle);
         println!("Created handle {n}");
     }
 
     fn apply_simulation_event(&mut self, info: GenericSimulationEventInfo) {
-        let child_timeline = info.child_timeline(&self.multiverse);
-        let parent_timeline = info.parent_timeline(&self.multiverse);
+        let child_timeline = info.child_timeline(&self.multiverse());
+        let parent_timeline = info.parent_timeline(&self.multiverse());
 
         let new_timestamp = if child_timeline != parent_timeline {
             todo!()
         }
         else {
-            self.timeline_timestamps.get_mut(&parent_timeline)
-                .expect("Exists")
-                .push(TimestampDelta {
-                    delta_t: info.impact_delta_time(),
-                })
+            // self.timeline_timestamps.get_mut(&parent_timeline)
+            //     .expect("Exists")
+            //     .push(TimestampDelta {
+            //         delta_t: info.impact_delta_time(),
+            //     })
+            todo!()
         };
 
         match info {
             GenericSimulationEventInfo::OneCollision(event) => {
-                self.apply_collision(event, new_timestamp);
+                self.apply_collision(event);
             },
             GenericSimulationEventInfo::TwoCollision(event) => {
-                self.apply_collision(event, new_timestamp);
+                self.apply_collision(event);
             },
             GenericSimulationEventInfo::PortalTraversal(event) => {
                 self.apply_portal_traversal(event, new_timestamp);
@@ -711,7 +804,7 @@ impl Simulator {
         }
 
         let leafs = self.snapshots.leafs().iter().copied()
-            .map(|handle| this.integrate(handle))
+            .map(|handle| this.integrate_snapshot(handle))
             .flat_map(|snaps| {
                 (0..snaps.len()).into_iter()
                 .filter_map(move |i| {
@@ -814,7 +907,7 @@ impl Simulator {
             )
             .inspect(|col| debug_assert!(col.impact_delta_time() <= MAX_DT))
             // .filter(|col| col.impact_delta_time() < *self.max_time)
-            .min_by_key(|col| (col.parent_timeline(&self.multiverse), OF(col.impact_time())))
+            .min_by_key(|col| (col.parent_timeline(&self.multiverse()), OF(col.impact_time())))
         ;
 
         let Some(collision) = collision
@@ -828,7 +921,7 @@ impl Simulator {
         };
         println!("Selected collision: {}", collision.simple_debug());
 
-        assert_eq!(collision.parent_timeline(&self.multiverse), collision.child_timeline(&self.multiverse), "Unsupported yet");
+        assert_eq!(collision.parent_timeline(&self.multiverse()), collision.child_timeline(&self.multiverse()), "Unsupported yet");
         // assert!(self.timeline_presents[&tid] <= collision.impact_time(), "assert({} <= {}) ({collision:#?})", self.timeline_presents[&tid], collision.impact_time());
 
         self.apply_simulation_event(collision);

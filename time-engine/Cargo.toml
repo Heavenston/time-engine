@@ -17,3 +17,4 @@ smallvec = { version = "2.0.0-alpha.11", features = ["std", "specialization", "m
 arrayvec = "0.7.6"
 typed_floats = "1.0.6"
 rayon = "1.10.0"
+derive-where = { version = "1.5.0", features = ["nightly"] }

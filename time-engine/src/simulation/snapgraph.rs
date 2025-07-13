@@ -6,8 +6,6 @@ use glam::{ Affine2, Vec2 };
 use itertools::Itertools;
 use smallvec::smallvec;
 
-pub use dg::{ NodeHandle, InnerNodeHandle, RootNodeHandle, GenericNode };
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortalTraversalDirection {
     /// Special case for vecolity = 0
@@ -48,7 +46,8 @@ pub enum PartialSnapshotDelta {
         angular: f32,
     },
     PortalTraversal {
-        /// After the impulse is applied this is the list of current portal traversals
+        /// This is a new partial portal traversal that will stay until the
+        /// snapshot does not collide with the portal anymore
         traversal: PartialPortalTraversal,
     },
     Ghostification {
@@ -58,10 +57,9 @@ pub enum PartialSnapshotDelta {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PartialSnapshot {
-    /// How much time *after* the previous snapshot does this one
+    /// How much time *after* the *previous* snapshot does this one
     /// happens in local time
     pub delta_age: Positive,
-    pub new_timestamp: Timestamp,
     pub delta: PartialSnapshotDelta,
 }
 
@@ -114,8 +112,6 @@ pub struct Snapshot {
     /// Time this snapshot was extrapolated by from its original time
     pub extrapolated_by: Positive,
 
-    pub timeline_id: TimelineId,
-    pub timestamp: Timestamp,
     pub age: Positive,
     pub time: f32,
 
@@ -139,13 +135,6 @@ impl Snapshot {
         Affine2::from_angle_translation(self.rot, self.pos)
     }
 
-    pub fn copy_without_portal_traversals(&self) -> Self {
-        Self {
-            portal_traversals: default(),
-            ..*self
-        }
-    }
-
     pub fn apply_portal_transormation(&mut self, transform: Affine2) {
         self.linvel = transform.transform_vector2(self.linvel);
         self.pos = transform.transform_point2(self.pos);
@@ -161,7 +150,6 @@ impl Snapshot {
         self.time += delta.get();
     }
 
-    #[deprecated]
     pub fn extrapolate_to(&self, to: f32) -> Option<Self> {
         let to = if (to - self.time).abs() <= DEFAULT_EPSILON { self.time } else { to };
         let Ok(dt) = Positive::new(to - self.time)
@@ -170,9 +158,10 @@ impl Snapshot {
         };
 
         Some(Self {
+            extrapolated_by: self.extrapolated_by + dt,
+
             age: self.age + dt,
             time: to,
-            extrapolated_by: self.extrapolated_by + dt,
 
             pos: self.pos + self.linvel * dt.get(),
             rot: self.rot + self.angvel * dt.get(),
@@ -180,14 +169,6 @@ impl Snapshot {
             portal_traversals: self.portal_traversals.clone(),
 
             ..*self
-        })
-    }
-
-    pub fn extrapolate_to_timestamp(&self, to: f32, timestamp: Timestamp) -> Option<Self> {
-        #[expect(deprecated)]
-        self.extrapolate_to(to).map(|this| Self {
-            timestamp,
-            ..this
         })
     }
 }
@@ -208,10 +189,10 @@ impl dg::DeltaGraphDataType for SnapgraphDataType {
     type Ctx<'a> = &'a Simulator;
 
     fn integrate_root(
-        ctx: &mut Self::Ctx<'_>,
+        _ctx: &mut Self::Ctx<'_>,
         _graph: &dg::DeltaGraph<Self>,
         handle: RootNodeHandle,
-        root_snap: &Self::RootData,
+        root_snap: &RootSnapshot,
     ) -> Arc<[Snapshot]> {
         let snapshot = sg::Snapshot {
             object_id: root_snap.object_id,
@@ -219,8 +200,6 @@ impl dg::DeltaGraphDataType for SnapgraphDataType {
             sub_id: 0,
             extrapolated_by: Positive::new(0.).expect("Positive"),
 
-            timeline_id: ctx.multiverse.root(),
-            timestamp: ctx.timeline_timestamps[&ctx.multiverse.root()].first_timestamp(),
             // All objects starts with age 0 at time 0
             age: Positive::new(0.).expect("Positive"),
             time: 0.,
@@ -264,7 +243,6 @@ impl dg::DeltaGraphDataType for SnapgraphDataType {
             new_snapshot.portal_traversals.retain(|traversal| {
                 !traversal.time_range.is_finished(new_snapshot.time)
             });
-            new_snapshot.timestamp = partial.new_timestamp;
     
             // Portal traversals only affect a single sub_id
             // whereas impulses affect all sub_id s
@@ -334,6 +312,11 @@ impl dg::DeltaGraphDataType for SnapgraphDataType {
 
 }
 
+pub type NodeHandle = dg::NodeHandle<SnapgraphDataType>;
+pub type InnerNodeHandle = dg::InnerNodeHandle<SnapgraphDataType>;
+pub type RootNodeHandle = dg::RootNodeHandle<SnapgraphDataType>;
+pub trait GenericNode = dg::GenericNode<SnapgraphDataType>;
+
 pub type SnapshotGraph = dg::DeltaGraph<SnapgraphDataType>;
 pub type InnerNode = dg::InnerNode<SnapgraphDataType>;
 pub type RootNode = dg::RootNode<SnapgraphDataType>;
@@ -344,6 +327,7 @@ pub type NodeRef<'a> = dg::NodeRef<'a, SnapgraphDataType>;
 // TEMP: TODO: REMOVE
 pub trait DeprecatedTimelineIdDummy {
     #[deprecated]
+    #[expect(deprecated)]
     fn timeline_id(&self) -> TimelineId {
         TimelineId::root()
     }

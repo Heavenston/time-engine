@@ -1,3 +1,5 @@
+#![deprecated]
+
 use parking_lot::RwLock;
 
 #[derive(Debug, Clone, Copy)]
@@ -12,6 +14,13 @@ impl TimelineId {
 
     pub fn root() -> Self {
         TimelineId { idx: 0 }
+    }
+}
+
+// For ease of creation during deprecation
+impl Default for TimelineId {
+    fn default() -> Self {
+        Self::root()
     }
 }
 
