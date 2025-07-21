@@ -1,61 +1,37 @@
-use std::sync::Arc;
+use std::{iter::once, sync::Arc};
 
-use itertools::Itertools;
+use itertools::{chain, Itertools};
 
 use super::*;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TimestampRoot {
     pub time: f32,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum TimestampPartialData {
-    Forward { },
-    BackwardBranch {
-        /// Must be a parent
-        target_timestamp: Timestamp,
-    },
-}
-
-impl TimestampPartialData {
-    pub fn is_forward(&self) -> bool {
-        matches!(self, Self::Forward { .. })
-    }
-
-    pub fn is_backward_branch(&self) -> bool {
-        matches!(self, Self::BackwardBranch { .. })
-    }
+    pub handles: Box<[sg::NodeHandle]>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct TimestampPartial {
     pub delta_time: Positive,
-    pub delta: TimestampPartialData,
+    pub remove_snapshots: [Option<sg::NodeHandle>; 2],
+    pub new_snapshots: [Option<sg::NodeHandle>; 2],
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct TimestampBranch {
-    /// The timestamp that did the branching
-    pub branched_at: Timestamp,
-    /// The timestamp to which the branching went
-    pub branched_to: Timestamp,
-
-    // TODO: Doc
-    /// Is child of branched_to and parent of the current timestamp
-    /// 
-    /// uses delta times so may not be exact
-    pub current_branch_timestamp: Timestamp,
-    // TODO: Doc
-    /// Should not be greater than the delta_time of the next timestamp after
-    /// the current_branch_timestamp
-    pub current_branch_delta_t: Positive,
+#[derive(Debug, Clone)]
+pub struct TimestampSnapshotLink {
+    pub snapshot_handle: sg::NodeHandle,
+    pub delta_since_add: Positive,
 }
 
 #[derive(Debug, Clone)]
 pub struct TimestampData {
     pub time: f32,
-    pub branches: Vec<TimestampBranch>,
+    // FIXME: Using RLEVec instead of Vec will definitely save memory here
+    //        but may have other costs so benchmark before swiching
+    //        Could also just be a linked list... but this goes kinda back to
+    //        just traversing the graph every time so hard to see a big win
+    pub path: Box<[usize]>,
+    pub snapshot_links: Box<[TimestampSnapshotLink]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,100 +51,96 @@ impl dg::DeltaGraphDataType for TimestampDataType {
     ) -> Arc<TimestampData> {
         Arc::new(TimestampData {
             time: root.time,
-            branches: vec![],
+            path: default(),
+            snapshot_links: default(),
         })
     }
 
     fn integrate_partial(
-        ctx: &mut Self::Ctx<'_>,
+        _ctx: &mut Self::Ctx<'_>,
         graph: &dg::DeltaGraph<Self>,
         handle: dg::InnerNodeHandle<Self>,
         running: &TimestampData,
         partial: &TimestampPartial,
     ) -> Arc<TimestampData> {
-        let timestamp: Timestamp = handle.into();
-        let mut branches = running.branches.clone();
+        let mut links = Vec::from(&running.snapshot_links[..]);
 
-        for branch in &mut branches {
-            debug_assert!(graph.is_parent(branch.current_branch_timestamp, timestamp));
-            let current_branch = &graph[branch.current_branch_timestamp];
-            let Some(&next_timestamp) = current_branch.children().iter()
-                .filter(|&&child_timestamp| graph.is_directly_related(child_timestamp.into(), timestamp))
-                .at_most_one().expect("Cannot be multiple children of the same lineage")
-            else {
-                // Maybe just `continue;` ?
-                todo!()
-            };
-            let next_partial = &graph[next_timestamp];
+        for link in &mut links {
+            link.delta_since_add += partial.delta_time;
+        }
 
-            branch.current_branch_delta_t += partial.delta_time;
+        // check that Some are first in the array
+        #[cfg(debug_assertions)]
+        for arr in [partial.remove_snapshots, partial.new_snapshots] {
+            debug_assert!(arr.is_sorted_by_key(Option::is_none));
+        }
 
-            // if branch.current_branch_delta_t >= next_partial.data.delta_time
-            // i.e. when we go further than the current_branch_timestamp
-            if let Ok(new_delta_t) = Positive::new(branch.current_branch_delta_t - next_partial.data.delta_time) {
-                branch.current_branch_timestamp = next_timestamp.into();
-                branch.current_branch_delta_t = new_delta_t;
+        let handles_changes = partial.remove_snapshots.iter().copied()
+            .zip(partial.new_snapshots.iter().copied());
+        for (remove, new) in handles_changes {
+            let new = new.map(|new| TimestampSnapshotLink {
+                snapshot_handle: new,
+                delta_since_add: ZERO.into(),
+            });
+
+            if let Some(remove_link) = remove {
+                let Some(pos) = links.iter().position(|l| l.snapshot_handle == remove_link)
+                else { unreachable!("All timestamp partial should be valid") };
+                if let Some(new_link) = new {
+                    links[pos] = new_link;
+                }
+                else {
+                    links.swap_remove(pos);
+                }
+            }
+            else if let Some(link) = new {
+                links.push(link);
             }
         }
 
-        match partial.delta {
-            TimestampPartialData::Forward { } => {
-                Arc::new(TimestampData {
-                    time: running.time + partial.delta_time.get(),
-                    branches,
-                })
-            },
-            TimestampPartialData::BackwardBranch { target_timestamp } => {
-                debug_assert!(graph.is_parent(target_timestamp, timestamp));
-
-                #[cfg(debug_assertions)]
-                'check_delta_t_is_not_too_high: {
-                    let target_node = &graph[target_timestamp];
-                    let Some(&next_timestamp) = target_node.children().iter()
-                        .filter(|&&child_timestamp| graph.is_directly_related(child_timestamp.into(), timestamp))
-                        .at_most_one().expect("Cannot be multiple children of the same lineage")
-                    else { break 'check_delta_t_is_not_too_high; };
-                    let next_partial = &graph[next_timestamp];
-                    debug_assert!(partial.delta_time < next_partial.data.delta_time);
-                }
-
-                let target_data = graph.integrate(ctx, target_timestamp);
-                branches.push(TimestampBranch {
-                    branched_at: timestamp,
-                    branched_to: target_timestamp,
-
-                    current_branch_timestamp: timestamp,
-                    current_branch_delta_t: partial.delta_time,
-                });
-                Arc::new(TimestampData {
-                    time: target_data.time + partial.delta_time.get(),
-                    branches,
-                })
-            },
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    fn insert_hook(
-        _ctx: &mut Self::InsertCtx<'_>,
-        graph: &dg::DeltaGraph<Self>,
-        timestamp: Timestamp,
-    ) {
-        // Just inserted so should be 0
-        debug_assert_eq!(graph[timestamp].children().len(), 0);
-
-        let dg::EitherHandle::Inner(handle) = timestamp.either()
-        else { return };
-
-        let parent = graph[handle].previous;
-
-        let forward_count = graph.children(parent)
-            .filter(|child| child.data.delta.is_forward())
-            .count();
-
-        debug_assert!(forward_count <= 1);
+        Arc::new(TimestampData {
+            time: running.time + partial.delta_time.get(),
+            path: running.path.iter().copied()
+                .chain(once(graph.child_index(handle)))
+                .collect(),
+            snapshot_links: links.into_boxed_slice(),
+        })
     }
 }
 
 pub type Timestamp = dg::NodeHandle<TimestampDataType>;
 pub type TimestampGraph = dg::DeltaGraph<TimestampDataType>;
+
+pub trait TimestampGraphExt {
+    /// Returns a list of timestamps that is at most dt away
+    /// along with how much time is still remaining
+    fn advance(&self, timestamp: Timestamp, dt: Positive) -> Vec<(Timestamp, Positive)>;
+}
+
+impl TimestampGraphExt for TimestampGraph {
+    fn advance(&self, timestamp: Timestamp, dt: Positive) -> Vec<(Timestamp, Positive)> {
+        let mut result = vec![];
+
+        let mut add_self = self[timestamp].children().is_empty();
+        for child in self.children(timestamp) {
+            let ndt = dt - child.data.delta_time;
+
+            if let Ok(ndt) = Positive::new(ndt) /* dt >= 0. */ {
+                let mut nws = self.advance(child.inner_handle.into(), ndt);
+                nws.retain(|(h1, _)| !result.iter().any(|(h2, _)| h1 == h2));
+                result.extend(nws);
+            }
+            else /* ndt < 0. */ {
+                add_self = true;
+            }
+        }
+
+        if add_self {
+            result.push((timestamp, dt))
+        }
+
+        debug_assert!(result.iter().map(|(h, _)| h).all_unique());
+
+        result
+    }
+}

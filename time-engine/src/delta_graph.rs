@@ -37,29 +37,18 @@ pub trait DeltaGraphDataType: Sized + 'static {
     ) { }
 }
 
-#[cfg(debug_assertions)]
 mod graph_id {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static GRAPH_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-    pub struct GraphId(u64);
-
-    impl GraphId {
-        pub fn new() -> Self {
-            Self(GRAPH_ID_COUNTER.fetch_add(1, Ordering::Relaxed))
-        }
+    #[derive(Default, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+    pub struct GraphId {
+        #[cfg(debug_assertions)]
+        uid: crate::Uid,
+        // Private field to prevent public literal construction event in release mode
+        _field: (),
     }
-}
-#[cfg(not(debug_assertions))]
-mod graph_id {
-    #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-    pub struct GraphId(());
 
     impl GraphId {
         pub fn new() -> Self {
-            Self(())
+            Self::default()
         }
     }
 }
@@ -68,25 +57,38 @@ use graph_id::*;
 mod node_handle {
     use super::{ GraphId, DeltaGraphDataType };
 
-    use std::{ fmt::Display, marker::PhantomData };
+    use std::{ fmt::Display, marker::PhantomData, num::{NonZero, NonZeroUsize} };
 
     use derive_where::derive_where;
 
+    type InnerValueType = u32;
+
+    // FIXME: Maybe use `as` in release mode ?
+    fn to_usize(val: InnerValueType) -> usize {
+        usize::try_from(val).expect("No overflow")
+    }
+
+    fn from_usize(val: usize) -> InnerValueType {
+        InnerValueType::try_from(val).expect("No overflow")
+    }
+
     /// Bitmask to extract the actual index from the handle value
-    const IDX_MASK: usize = !0 >> 1;
+    const IDX_MASK: InnerValueType = !0 >> 1;
     /// If this bit is set to 1 then the node is an inner node
-    const INNER_BIT: usize = !IDX_MASK;
+    const INNER_BIT: InnerValueType = !IDX_MASK;
 
     #[derive_where(Debug, Clone, Copy, Hash, PartialEq, Eq)]
     pub struct NodeHandle<D: DeltaGraphDataType> {
         graph_id: GraphId,
-        value: usize,
+        value: NonZero<InnerValueType>,
         _data_type: PhantomData<*const D>,
     }
 
     impl<D: DeltaGraphDataType> NodeHandle<D> {
         pub fn idx(self) -> usize {
-            self.value & IDX_MASK
+            to_usize(
+                (self.value.get() - 1) & IDX_MASK
+            )
         }
 
         pub(super) fn graph_id(self) -> GraphId {
@@ -94,7 +96,7 @@ mod node_handle {
         }
 
         pub fn is_inner(self) -> bool {
-            (self.value & INNER_BIT) != 0
+            ((self.value.get() - 1) & INNER_BIT) != 0
         }
 
         pub fn is_root(self) -> bool {
@@ -138,11 +140,12 @@ mod node_handle {
 
     impl<D: DeltaGraphDataType> RootNodeHandle<D> {
         pub(super) fn new(graph_id: GraphId, idx: usize) -> Self {
+            let idx = from_usize(idx);
             assert_eq!(idx, idx & IDX_MASK, "Index overflow!");
             Self {
                 handle: NodeHandle::<D> {
                     graph_id,
-                    value: idx,
+                    value: NonZero::new(idx + 1).expect("Just incremented"),
                     _data_type: PhantomData::default(),
                 },
             }
@@ -185,11 +188,12 @@ mod node_handle {
 
     impl<D: DeltaGraphDataType> InnerNodeHandle<D> {
         pub(super) fn new(graph_id: GraphId, idx: usize) -> Self {
+            let idx = from_usize(idx);
             assert_eq!(idx, idx & IDX_MASK, "Index overflow!");
             Self {
                 handle: NodeHandle::<D> {
                     graph_id,
-                    value: idx | INNER_BIT,
+                    value: NonZero::new((idx | INNER_BIT) + 1).expect("Just incremented"),
                     _data_type: PhantomData::default(),
                 },
             }
@@ -455,6 +459,8 @@ pub struct DeltaGraph<D: DeltaGraphDataType> {
     inner_nodes: Vec<InnerNode<D>>,
     /// Used to efficiently provide the list of all leafs
     /// assumed to be pretty small
+    // FIXME: A sorted vec may add some performance improvment opportunities
+    //        or just a HashSet...
     leafs: Vec<NodeHandle<D>>,
     /// Used to cache the integrated version of all nodes
     /// should be pretty dense (nodes quickly get integrated)
@@ -561,8 +567,12 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
         )
     }
 
-    pub fn leafs(&self) -> &[NodeHandle<D>] {
-        &self.leafs
+    pub fn leafs(&self) -> impl Iterator<Item = NodeHandle<D>> + DoubleEndedIterator + ExactSizeIterator {
+        self.leafs.iter().copied()
+    }
+
+    pub fn is_leaf(&self, handle: NodeHandle<D>) -> bool {
+        self.leafs.contains(&handle)
     }
 
     pub fn directed_distance(&self, parent: NodeHandle<D>, mut child: NodeHandle<D>) -> Option<usize> {
@@ -623,6 +633,16 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
         }
     }
 
+    /// Returns the index where this node is in the children array of the parent.
+    /// This number cannot change as new child are only appended to the children array.
+    pub fn child_index(&self, handle: InnerNodeHandle<D>) -> usize {
+        let (position, _) = self[self[handle].previous].children().iter()
+            .find_position(|&&handle2| handle == handle2)
+            .expect("Must be present");
+
+        position
+    }
+
     pub fn children(&self, handle: NodeHandle<D>) -> impl Iterator<Item = InnerNodeRef<'_, D>> + '_ {
         let node = self.get(handle);
         (0..node.children().len()).into_iter()
@@ -642,9 +662,6 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
 
     pub fn insert(&mut self, ctx: &mut D::InsertCtx<'_>, data: D::PartialData, previous: impl Into<NodeHandle<D>>) -> InnerNodeHandle<D> {
         let previous = previous.into();
-        if let Some((leaf_idx, _)) = self.leafs.iter().find_position(|&&handle_| previous == handle_) {
-            self.leafs.remove(leaf_idx);
-        }
 
         self.inner_nodes.push(InnerNode {
             data,
@@ -652,7 +669,13 @@ impl<D: DeltaGraphDataType> DeltaGraph<D> {
             children: vec![],
         }.into());
         let handle = self.inner_handle(self.inner_nodes.len()-1);
-        self.leafs.push(handle.into());
+
+        if let Some(leaf_idx) = self.leafs.iter().position(|&handle_| previous == handle_) {
+            self.leafs[leaf_idx] = handle.into();
+        }
+        else {
+            self.leafs.push(handle.into());
+        }
 
         self.get_mut(previous).children_mut().push(handle);
 

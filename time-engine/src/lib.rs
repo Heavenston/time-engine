@@ -8,6 +8,8 @@
 #![feature(trait_alias)]
 #![feature(associated_type_defaults)]
 
+#![forbid(unsafe_code)]
+#![expect(unused_imports)]
 #![expect(incomplete_features)]
 #![expect(dead_code)]
 
@@ -19,6 +21,7 @@ pub use simulation::*;
 mod polygon_utils;
 pub use polygon_utils::*;
 mod timeline_id;
+#[expect(deprecated)]
 pub use timeline_id::*;
 mod immutable_util;
 pub(crate) use immutable_util::*;
@@ -28,8 +31,12 @@ mod time_range;
 pub use time_range::*;
 pub mod delta_graph;
 pub(crate) use delta_graph as dg;
+pub mod rle_vec;
+pub use rle_vec::*;
+pub mod uid;
+pub use uid::*;
 
-use std::range::RangeBounds;
+use std::{range::RangeBounds, sync::Arc};
 
 pub(crate) use typed_floats::tf32::*;
 
@@ -120,3 +127,26 @@ pub(crate) fn option_max(a: Option<f32>, b: Option<f32>) -> Option<f32> {
     a.zip_with(b, f32::max).or(a).or(b)
 }
 
+pub(crate) fn concat_arrays<T, const A: usize, const B: usize>(
+    a: [T; A], b: [T; B]
+) -> [T; A+B]
+where
+    T: Default,
+{
+    let mut ary: [T; A+B] = std::array::from_fn(|_| Default::default());
+    for (idx, val) in a.into_iter().chain(b.into_iter()).enumerate() {
+        ary[idx] = val;
+    }
+    ary
+}
+
+// FIXME: For some types where cloning is expensive being able to return
+//        mapped Arc would probably be faster (https://crates.io/crates/mappable-rc)
+pub(crate) fn cloned_arc_slice_iter<A: ?Sized, T, U>(
+    ptr: Arc<A>,
+    getter: impl Fn(&A) -> &[T],
+    mapper: impl Fn(&T) -> U,
+) -> impl Iterator<Item = U> {
+    (0..getter(&*ptr).len()).into_iter()
+        .map(move |i| mapper(&getter(&*ptr)[i]))
+}

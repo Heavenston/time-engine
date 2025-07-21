@@ -25,6 +25,12 @@ pub struct RootSnapshot {
     pub angvel: f32,
 }
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct InteractionLink {
+    pub handle: NodeHandle,
+    pub sub_id: usize,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PartialPortalTraversal {
     pub half_portal_idx: usize,
@@ -34,6 +40,7 @@ pub struct PartialPortalTraversal {
     pub duration: Positive,
     pub sub_id: usize,
     pub traversal_direction: PortalTraversalDirection,
+    pub output_branch_timestamp: tsg::Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,6 +157,14 @@ impl Snapshot {
         self.time += delta.get();
     }
 
+    pub fn extrapolate_by(&self, dt: Positive) -> Self {
+        let mut this = self.clone();
+        this.integrate_by(dt);
+        this.extrapolated_by += dt;
+        this
+    }
+
+    #[deprecated]
     pub fn extrapolate_to(&self, to: f32) -> Option<Self> {
         let to = if (to - self.time).abs() <= DEFAULT_EPSILON { self.time } else { to };
         let Ok(dt) = Positive::new(to - self.time)
@@ -157,19 +172,10 @@ impl Snapshot {
             unreachable!("New time must be higher than current time ({to} is lower than {})", self.time);
         };
 
-        Some(Self {
-            extrapolated_by: self.extrapolated_by + dt,
-
-            age: self.age + dt,
-            time: to,
-
-            pos: self.pos + self.linvel * dt.get(),
-            rot: self.rot + self.angvel * dt.get(),
-
-            portal_traversals: self.portal_traversals.clone(),
-
-            ..*self
-        })
+        let mut this = self.extrapolate_by(dt);
+        // Butter precision than this.time += dt
+        this.time = to;
+        Some(this)
     }
 }
 
